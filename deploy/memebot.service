@@ -1,0 +1,22 @@
+# systemd unit for bare-metal / VPS deployment.
+#   sudo cp deploy/memebot.service /etc/systemd/system/
+#   sudo systemctl enable --now memebot
+[Unit]
+Description=memebot paper/live trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/memebot
+ExecStart=/opt/memebot/.venv/bin/memebot paper
+Restart=always
+RestartSec=15
+# secrets via environment file (chmod 600, root-owned):
+EnvironmentFile=-/etc/memebot.env
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/memebot/data
+
+[Install]
+WantedBy=multi-user.target

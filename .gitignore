@@ -1,0 +1,20 @@
+# data & runtime state (never commit market data or wallet material)
+data/*.db
+data/*.db-journal
+data/*.log
+data/state/
+*.key
+*.keypair
+.env
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+
+# research outputs are committed selectively
+research/results/*.csv

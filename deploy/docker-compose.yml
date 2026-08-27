@@ -1,0 +1,26 @@
+services:
+  memebot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ../data:/app/data
+    environment:
+      # paper mode needs nothing. For live, uncomment and provide:
+      # MEMEBOT_LIVE: "YES"
+      # MEMEBOT_PRIVATE_KEY: ${MEMEBOT_PRIVATE_KEY}
+      # MEMEBOT_RPC_URL: ${MEMEBOT_RPC_URL}
+      MEMEBOT_TG_TOKEN: ${MEMEBOT_TG_TOKEN:-}
+      MEMEBOT_TG_CHAT: ${MEMEBOT_TG_CHAT:-}
+    command: ["memebot", "paper"]
+
+  collector:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ../data:/app/data
+    command: ["python3", "scripts/collect_panel.py", "--hours", "168",
+              "--db", "data/panel.db"]

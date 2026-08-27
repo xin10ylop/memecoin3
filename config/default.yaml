@@ -1,0 +1,54 @@
+# memebot default configuration.
+# Every value here can be overridden by a second yaml passed with --config,
+# or (for secrets) by MEMEBOT_* environment variables. See src/memebot/config.py.
+
+mode: paper          # paper | live  (live additionally requires MEMEBOT_LIVE=YES env)
+
+capital:
+  starting_usd: 1000.0        # paper starting equity; live uses wallet balance
+  risk_per_trade_usd: 25.0    # notional per position
+  max_concurrent: 4
+  max_exposure_frac: 0.5      # max fraction of equity deployed at once
+  daily_loss_limit_frac: 0.10 # realized daily loss that halts new entries until UTC midnight
+  max_pool_share: 0.005       # position must be <= 0.5% of pool liquidity
+
+costs:
+  dex_fee_bps: 30            # AMM swap fee per side
+  adverse_bps: 30            # latency / adverse-selection buffer per side
+  priority_fee_usd: 0.05     # flat per transaction
+  rug_exit_impact_mult: 3.0  # slippage multiplier for forced exits during liquidity collapse
+
+safety:
+  require_revoked_mint_authority: true
+  require_revoked_freeze_authority: true
+  max_top10_holder_frac: 0.35     # excluding the largest account (assumed pool vault)
+  min_liquidity_usd: 15000
+  min_age_minutes: 30
+  max_age_hours: 48
+  min_vol_h1_usd: 10000
+  sell_quote_max_impact_frac: 0.15  # Jupiter sell-quote for 2x position must clear
+  roundtrip_max_loss_frac: 0.20     # buy+sell quoted loss beyond fees => honeypot-ish
+  fdv_min_usd: 100000
+  fdv_max_usd: 30000000
+
+strategy:
+  name: dip_reclaim            # see src/memebot/strategy.py registry
+  params: {}                   # strategy-specific overrides; empty = tuned defaults
+
+exits:
+  stop_frac: 0.20              # hard stop below entry
+  trail_frac: 0.25             # trailing stop from high-water mark
+  tp_levels: [[0.5, 0.4]]      # [[gain_frac, sell_frac], ...] e.g. +50% -> sell 40%
+  max_hold_minutes: 360
+  liquidity_drop_exit_frac: 0.5   # reserve dropping this much in 5m forces exit
+
+live:
+  scan_interval_sec: 60
+  tick_interval_sec: 10
+  gt_rate_per_min: 20
+  state_db: data/live.db
+  kill_file: data/KILL          # touch this file to halt all trading
+  wallet_min_sol: 0.05          # never spend below this SOL reserve (fees)
+
+telegram:
+  enabled: false                # set MEMEBOT_TG_TOKEN / MEMEBOT_TG_CHAT env to use

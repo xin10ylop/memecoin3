@@ -183,6 +183,54 @@ def snapshot_new_pools(gt: GTClient, db: sqlite3.Connection, pages: int) -> int:
     return n
 
 
+def _insert_snapshot_row(db: sqlite3.Connection, ts: int, a: dict) -> None:
+    addr = a.get("address")
+    if not addr:
+        return
+    vol = a.get("volume_usd") or {}
+    tx = a.get("transactions") or {}
+    m5 = tx.get("m5") or {}
+    h1 = tx.get("h1") or {}
+    pc = a.get("price_change_percentage") or {}
+    db.execute(
+        "INSERT OR REPLACE INTO snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (addr, ts, f(a.get("base_token_price_usd")), f(a.get("reserve_in_usd")),
+         f(a.get("fdv_usd")), f(a.get("market_cap_usd")),
+         f(vol.get("m5")), f(vol.get("h1")), f(vol.get("h24")),
+         m5.get("buys"), m5.get("sells"), m5.get("buyers"), m5.get("sellers"),
+         h1.get("buys"), h1.get("sells"),
+         f(pc.get("m5")), f(pc.get("h1"))),
+    )
+
+
+def snapshot_tracked(gt: GTClient, db: sqlite3.Connection,
+                     min_reserve: float = 2000.0, cap: int = 300) -> int:
+    """Keep snapshotting pools that left the newest-200 window but matter
+    (ever reached min_reserve liquidity, or ever trended). Uses the
+    30-addresses-per-call multi endpoint to stay inside rate budget."""
+    rows = db.execute(
+        """
+        SELECT DISTINCT p.pool_address FROM pools p
+        WHERE EXISTS (SELECT 1 FROM snapshots s WHERE s.pool_address=p.pool_address
+                      AND s.reserve_usd >= ?)
+           OR EXISTS (SELECT 1 FROM trending t WHERE t.pool_address=p.pool_address)
+        ORDER BY p.first_seen_at DESC LIMIT ?
+        """,
+        (min_reserve, cap),
+    ).fetchall()
+    addrs = [r[0] for r in rows]
+    ts = int(time.time())
+    n = 0
+    for i in range(0, len(addrs), 30):
+        chunk = ",".join(addrs[i:i + 30])
+        data = gt.get(f"/networks/solana/pools/multi/{chunk}")
+        for item in (data or {}).get("data") or []:
+            _insert_snapshot_row(db, ts, item.get("attributes") or {})
+            n += 1
+    db.commit()
+    return n
+
+
 def snapshot_trending(gt: GTClient, db: sqlite3.Connection) -> int:
     ts = int(time.time())
     n = 0
@@ -313,12 +361,14 @@ def main() -> int:
         try:
             n = snapshot_new_pools(gt, db, args.pages)
             trend = snapshot_trending(gt, db) if cycle % 4 == 1 else 0
-            ohlcv_calls = backfill_ohlcv(gt, db, budget_calls=40)
+            tracked = snapshot_tracked(gt, db)
+            ohlcv_calls = backfill_ohlcv(gt, db, budget_calls=35)
             npools = db.execute("SELECT COUNT(*) FROM pools").fetchone()[0]
             nbars = db.execute("SELECT COUNT(*) FROM ohlcv").fetchone()[0]
             log.info(
-                "cycle=%d snap_rows=%d trend=%d ohlcv_calls=%d pools=%d bars=%d",
-                cycle, n, trend, ohlcv_calls, npools, nbars,
+                "cycle=%d snap_rows=%d trend=%d tracked=%d ohlcv_calls=%d "
+                "pools=%d bars=%d",
+                cycle, n, trend, tracked, ohlcv_calls, npools, nbars,
             )
         except Exception:
             log.exception("cycle %d failed", cycle)

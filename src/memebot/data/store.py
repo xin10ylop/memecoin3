@@ -64,6 +64,17 @@ def _load_pool_df(db: sqlite3.Connection, addr: str) -> pd.DataFrame:
     if bars.empty:
         return bars
     bars = bars.drop_duplicates("ts").set_index("ts")
+    # Pool-initialization artifacts: the first minutes routinely print wicks
+    # thousands of x below the bar body (liquidity being seeded from ~zero).
+    # Clamp lows/highs of the first 3 bars to the bar body so stop/feature
+    # logic isn't poisoned. Later bars are left untouched (real flash moves).
+    head = bars.index[:3]
+    body_lo = bars.loc[head, ["o", "c"]].min(axis=1)
+    body_hi = bars.loc[head, ["o", "c"]].max(axis=1)
+    bars.loc[head, "l"] = pd.concat([bars.loc[head, "l"], body_lo * 0.5],
+                                    axis=1).max(axis=1)
+    bars.loc[head, "h"] = pd.concat([bars.loc[head, "h"], body_hi * 2.0],
+                                    axis=1).min(axis=1)
 
     snaps = pd.read_sql_query(
         """SELECT ts, reserve_usd, fdv_usd, buys_m5, sells_m5, buyers_m5,

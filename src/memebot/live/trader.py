@@ -40,7 +40,9 @@ from .state import StateStore
 log = logging.getLogger(__name__)
 
 WATCHLIST_MAX = 8
-BARS_PER_FETCH = 240
+# cover the default strategies' full lookback (age windows up to 12h) in one
+# OHLCV call so live features match backtest features for young pools
+BARS_PER_FETCH = 720
 
 
 class LiveTrader:

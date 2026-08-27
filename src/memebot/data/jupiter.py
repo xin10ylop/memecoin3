@@ -18,7 +18,8 @@ USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 
 class Jupiter:
-    def __init__(self, per_min: float = 50.0):
+    # keyless lite-api budget is ~30 RPM (60s sliding window); stay under it
+    def __init__(self, per_min: float = 24.0):
         self.http = HttpClient(per_min=per_min)
 
     def prices_usd(self, mints: list[str]) -> dict[str, float]:
@@ -73,16 +74,29 @@ class Jupiter:
 
     def build_swap_tx(self, quote_response: dict, user_pubkey: str,
                       priority_lamports: int = 1_000_000) -> str | None:
-        """Returns base64 unsigned VersionedTransaction (live mode only)."""
+        """Returns base64 unsigned VersionedTransaction (live mode only).
+
+        dynamicSlippage lets Jupiter pick effective slippage capped by the
+        quote's slippageBps; the response's simulationError is checked so a
+        transaction that already fails simulation is never signed."""
         data = self.http.post_json(f"{BASE}/swap/v1/swap", {
             "quoteResponse": quote_response,
             "userPublicKey": user_pubkey,
+            "wrapAndUnwrapSol": True,
             "dynamicComputeUnitLimit": True,
+            "dynamicSlippage": True,
             "prioritizationFeeLamports": {
                 "priorityLevelWithMaxLamports": {
                     "priorityLevel": "high",
                     "maxLamports": priority_lamports,
+                    "global": False,
                 }
             },
         })
-        return (data or {}).get("swapTransaction")
+        if not data:
+            return None
+        sim_err = data.get("simulationError")
+        if sim_err:
+            log.warning("swap simulation error, refusing to sign: %s", sim_err)
+            return None
+        return data.get("swapTransaction")

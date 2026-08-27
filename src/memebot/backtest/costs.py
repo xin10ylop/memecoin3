@@ -22,9 +22,10 @@ from dataclasses import dataclass
 @dataclass
 class CostModel:
     dex_fee_bps: float = 30.0        # per side
-    adverse_bps: float = 30.0        # per side latency/adverse-selection buffer
-    priority_fee_usd: float = 0.05   # per transaction
+    adverse_bps: float = 50.0        # per side latency/adverse/MEV buffer
+    priority_fee_usd: float = 0.10   # per transaction
     rug_exit_impact_mult: float = 3.0
+    mult: float = 1.0                # stress multiplier: report at 1x/2x/3x
 
     def impact_frac(self, trade_usd: float, reserve_usd: float | None) -> float:
         """Proportional price impact for one side."""
@@ -39,7 +40,12 @@ class CostModel:
         imp = self.impact_frac(trade_usd, reserve_usd)
         if stressed:
             imp = min(0.90, imp * self.rug_exit_impact_mult)
-        return (self.dex_fee_bps + self.adverse_bps) / 10_000.0 + imp
+        return min(0.95, self.mult * ((self.dex_fee_bps + self.adverse_bps)
+                                      / 10_000.0 + imp))
+
+    @property
+    def flat_fee_usd(self) -> float:
+        return self.mult * self.priority_fee_usd
 
     def buy_fill(self, ref_price: float, trade_usd: float,
                  reserve_usd: float | None) -> float:

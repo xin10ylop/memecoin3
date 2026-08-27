@@ -169,7 +169,7 @@ def simulate_position(df: pd.DataFrame, fill_idx: int, size_usd: float,
         exit_reason = exit_reason or "data_end"
 
     exit_ts = int(fills[-1].ts)
-    flat_fees = costs.priority_fee_usd * n_tx
+    flat_fees = costs.flat_fee_usd * n_tx
     pnl = proceeds - size_usd - flat_fees
     return Trade(pool=pool, symbol=symbol, entry_ts=int(ts[fill_idx]),
                  exit_ts=exit_ts, entry_price=entry_price, size_usd=size_usd,

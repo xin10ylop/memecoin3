@@ -101,10 +101,13 @@ def main() -> int:
     lines = ["# Panel base rates", "",
              f"pools: {len(pools)}  (indexed by GT with >= $2k max reserve, >=30 bars)",
              "", "## Unconditional (from first indexed bar)"]
-    for h in HORIZONS_MIN:
-        lines.append("- " + q(uncond[f"fwd_{h}m"], f"gross fwd {h}m"))
-    lines.append("- " + q(uncond["fwd_peak"], "peak multiple"))
-    lines.append("- " + q(uncond["min_to_peak"], "minutes to peak"))
+    if uncond.empty:
+        lines.append("- no pools with enough bars yet")
+    else:
+        for h in HORIZONS_MIN:
+            lines.append("- " + q(uncond[f"fwd_{h}m"], f"gross fwd {h}m"))
+        lines.append("- " + q(uncond["fwd_peak"], "peak multiple"))
+        lines.append("- " + q(uncond["min_to_peak"], "minutes to peak"))
     lines += ["", "## Conditional on crossing tradable gate "
                   "($15k liq & $10k/h vol)"]
     if not cond.empty:
@@ -117,7 +120,7 @@ def main() -> int:
         lines.append("- no pools crossed the gate yet")
     lines += ["", "## By dex (final/first, unconditional)"]
     if not uncond.empty:
-        for dex, grp in uncond.groupby("dex"):
+        for dex, grp in uncond.groupby("dex", dropna=False):
             lines.append("- " + q(grp["fwd_480m"], f"{dex} fwd 8h"))
     report = "\n".join(lines)
     (OUT / "base_rates.md").write_text(report)

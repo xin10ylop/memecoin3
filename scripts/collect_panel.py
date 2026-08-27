@@ -455,7 +455,9 @@ def main() -> int:
             trend = snapshot_trending(gt, db) if cycle % 4 == 1 else 0
             snapshot_dexscreener_attention(db, ds_session)
             tracked = snapshot_tracked(gt, db)
-            ohlcv_calls = backfill_ohlcv(gt, db, budget_calls=35)
+            # keep the full cycle well under the ~9 min depth of the
+            # newest-200 window so no launch is missed between sweeps
+            ohlcv_calls = backfill_ohlcv(gt, db, budget_calls=18)
             npools = db.execute("SELECT COUNT(*) FROM pools").fetchone()[0]
             nbars = db.execute("SELECT COUNT(*) FROM ohlcv").fetchone()[0]
             log.info(

@@ -69,6 +69,10 @@ class SafetyGate:
             reasons.append("mint authority not revoked")
         if c.require_revoked_freeze_authority and info["freeze_authority"]:
             reasons.append("freeze authority not revoked")
+        # Token-2022 extensions can implement transfer hooks / confiscatable
+        # balances / 100% transfer fees. Vanilla SPL only.
+        if info.get("program") == "spl-token-2022":
+            reasons.append("token-2022 mint (extension risk)")
         supply = info["supply"]
         if supply <= 0:
             reasons.append("zero supply")

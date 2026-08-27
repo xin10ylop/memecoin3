@@ -16,7 +16,7 @@ from ..data.store import PoolData
 from ..strategy import ExitRules, make_strategy
 from .costs import CostModel
 from .engine import RiskParams, run_backtest
-from .metrics import summarize
+from .metrics import log_registry, summarize
 
 
 @dataclass
@@ -50,6 +50,11 @@ def eval_config(pools: list[PoolData], grid: GridSpec, params: dict,
     s = summarize(res, label=label)
     s["params"] = params
     s["exit_params"] = exit_params
+    log_registry({"strategy": grid.strategy, "label": label, "params": params,
+                  "exit_params": exit_params,
+                  **{k: s.get(k) for k in ("n_trades", "expectancy_ret",
+                                           "expectancy_ci_lo", "total_pnl_usd",
+                                           "win_rate", "profit_factor")}})
     return s
 
 
@@ -85,11 +90,16 @@ def walk_forward(pools: list[PoolData], grid: GridSpec, costs: CostModel,
                  min_trades: int = 20) -> dict:
     """Anchored walk-forward: train on folds[0..i], test on fold[i+1]."""
     folds = split_by_launch(pools, n_folds)
+    # embargo: max holding period, so a train pool's trades can't overlap the
+    # test period through a token launched right at the fold boundary
+    embargo_sec = max((max(grid.exit_grid.get("max_hold_min", [360])) * 60), 3600)
     oos_summaries = []
     picks = []
     for i in range(n_folds - 1):
         train = [p for f in folds[: i + 1] for p in f]
-        test = folds[i + 1]
+        boundary = max((p.meta.created_ts or 0) for p in train)
+        test = [p for p in folds[i + 1]
+                if (p.meta.created_ts or 0) >= boundary + embargo_sec]
         train_rows = []
         for params, exit_params in _configs(grid):
             s = eval_config(train, grid, params, exit_params, costs, risk)

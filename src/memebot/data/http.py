@@ -12,10 +12,13 @@ log = logging.getLogger(__name__)
 
 
 class RateLimiter:
-    """Evenly paced limiter, thread-safe."""
+    """Adaptive paced limiter, thread-safe: multiplies the interval on 429s,
+    decays back to base on success (shared-IP burst buckets are unknowable)."""
 
     def __init__(self, per_min: float):
-        self.min_interval = 60.0 / per_min
+        self.base_interval = 60.0 / per_min
+        self.interval = self.base_interval
+        self.max_interval = 20.0
         self._last = 0.0
         self._lock = threading.Lock()
 
@@ -23,9 +26,17 @@ class RateLimiter:
         with self._lock:
             now = time.monotonic()
             delta = now - self._last
-            if delta < self.min_interval:
-                time.sleep(self.min_interval - delta)
+            if delta < self.interval:
+                time.sleep(self.interval - delta)
             self._last = time.monotonic()
+
+    def penalize(self) -> None:
+        with self._lock:
+            self.interval = min(self.max_interval, self.interval * 1.5)
+
+    def reward(self) -> None:
+        with self._lock:
+            self.interval = max(self.base_interval, self.interval * 0.97)
 
 
 class HttpClient:
@@ -48,13 +59,14 @@ class HttpClient:
                 time.sleep(2 * (attempt + 1))
                 continue
             if r.status_code == 200:
+                self.limiter.reward()
                 try:
                     return r.json()
                 except ValueError:
                     return None
             if r.status_code == 429:
-                log.warning("429 on %s; backing off", url)
-                time.sleep(15 * (attempt + 1))
+                self.limiter.penalize()
+                time.sleep(5 * (attempt + 1))
                 continue
             if r.status_code == 404:
                 return None

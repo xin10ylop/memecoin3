@@ -91,6 +91,10 @@ def simulate_position(df: pd.DataFrame, fill_idx: int, size_usd: float,
                if "reserve_usd" in df.columns else np.full(n, np.nan))
     res_chg = (df["reserve_chg_5m"].to_numpy(dtype=float)
                if "reserve_chg_5m" in df.columns else np.full(n, np.nan))
+    # executable depth: forward-filled reserve, then trailing 5-bar MIN —
+    # spoofed/just-pulled liquidity must not flatter fills
+    exec_liq = (pd.Series(reserve).ffill().rolling(5, min_periods=1).min()
+                .to_numpy(dtype=float))
 
     liq0 = liquidity_at(df, fill_idx)
     entry_price = costs.buy_fill(o[fill_idx], size_usd, liq0)
@@ -107,9 +111,8 @@ def simulate_position(df: pd.DataFrame, fill_idx: int, size_usd: float,
     exit_reason = None
 
     def known_liq(j: int) -> float | None:
-        s = reserve[: j + 1]
-        s = s[np.isfinite(s)]
-        return float(s[-1]) if len(s) else None
+        v = exec_liq[j]
+        return float(v) if np.isfinite(v) else None
 
     def sell(j: int, frac: float, ref_price: float, kind: str,
              stressed: bool = False) -> None:
@@ -185,11 +188,18 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
         sig = strategy.entries(pool, df)
         idxs = np.flatnonzero(sig)
         ts = df.index.to_numpy()
+        # entries only after WE could have known the pool exists (discovery
+        # time + feed latency); backfilled pre-discovery bars are features,
+        # never tradeable
+        seen_ts = (pool.meta.first_seen_ts or 0) + 120
         for i in idxs:
             fill_idx = int(i) + 1
             if fill_idx >= len(df):
                 continue
-            candidates.append((int(ts[fill_idx]), pool, df, fill_idx))
+            fill_ts = int(ts[fill_idx])
+            if fill_ts < seen_ts:
+                continue
+            candidates.append((fill_ts, pool, df, fill_idx))
     candidates.sort(key=lambda x: x[0])
 
     # 2) chronological portfolio pass with caps

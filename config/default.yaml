@@ -13,9 +13,10 @@ capital:
   max_pool_share: 0.005       # position must be <= 0.5% of pool liquidity
 
 costs:
-  dex_fee_bps: 30            # AMM swap fee per side
-  adverse_bps: 30            # latency / adverse-selection buffer per side
-  priority_fee_usd: 0.05     # flat per transaction
+  # per research/raw/strategies.md §3: defensible central case, not the floor
+  dex_fee_bps: 30            # AMM swap fee per side (pumpswap/raydium 25-30bps)
+  adverse_bps: 50            # latency / adverse-selection / MEV buffer per side
+  priority_fee_usd: 0.10     # flat per transaction (priority fee + tip)
   rug_exit_impact_mult: 3.0  # slippage multiplier for forced exits during liquidity collapse
 
 safety:

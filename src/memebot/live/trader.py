@@ -126,7 +126,8 @@ class LiveTrader:
         if len(bars) < 30:
             return None
         df = pd.DataFrame(bars, columns=["ts", "o", "h", "l", "c", "vol_usd"])
-        df = df.drop_duplicates("ts").set_index("ts").sort_index()
+        # in-progress candle can appear twice; keep the later (more complete)
+        df = df.drop_duplicates("ts", keep="last").set_index("ts").sort_index()
         snaps = self._snap_frame(pool)
         if not snaps.empty:
             df = pd.merge_asof(

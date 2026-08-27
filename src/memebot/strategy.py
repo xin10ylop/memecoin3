@@ -164,6 +164,24 @@ def _trending_follow(df: pd.DataFrame, p: dict) -> np.ndarray:
     return sig
 
 
+# placebo negative control: random entries through the SAME liquidity gate,
+# exits, and cost machinery. If a "real" strategy doesn't beat this by a
+# clear margin, its edge is the exit/cost machinery or the window, not the
+# entry signal.
+
+def _random_entries(df: pd.DataFrame, p: dict) -> np.ndarray:
+    pool: PoolData = p["_pool"]
+    seed = (hash(pool.meta.address) ^ p.get("seed", 0)) & 0x7FFFFFFF
+    rng = np.random.default_rng(seed)
+    eligible = (
+        _liq_ok(df, p["min_liq"])
+        & (df["age_min"] >= p["min_age_min"])
+        & (df["age_min"] <= p["max_age_min"])
+    ).fillna(False).to_numpy()
+    fire = rng.random(len(df)) < p["prob_per_bar"]
+    return eligible & fire
+
+
 # ---------------------------------------------------------------------------
 # registry with tuned-by-default parameter sets (grids live in walkforward)
 
@@ -182,6 +200,10 @@ DEFAULTS: dict[str, dict] = {
     "trending_follow": {
         "max_age_min": 2880, "min_liq": 30_000,
     },
+    "random_entries": {
+        "min_age_min": 15, "max_age_min": 720, "min_liq": 15_000,
+        "prob_per_bar": 0.01, "seed": 0,
+    },
 }
 
 ENTRY_FNS = {
@@ -189,6 +211,7 @@ ENTRY_FNS = {
     "dip_reclaim": _dip_reclaim,
     "attention_cont": _attention_cont,
     "trending_follow": _trending_follow,
+    "random_entries": _random_entries,
 }
 
 

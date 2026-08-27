@@ -31,18 +31,28 @@ log = logging.getLogger("collector")
 
 
 class RateLimiter:
-    """Simple pacing: at most `per_min` calls/minute, evenly spaced."""
+    """Adaptive pacing: starts at base interval, multiplies on 429s, decays
+    back on success. GT's real limit behaves like a small burst bucket on a
+    shared egress IP, so fixed pacing either wastes budget or thrashes."""
 
-    def __init__(self, per_min: float = 25.0):
-        self.min_interval = 60.0 / per_min
+    def __init__(self, per_min: float = 20.0):
+        self.base_interval = 60.0 / per_min
+        self.interval = self.base_interval
+        self.max_interval = 20.0
         self._last = 0.0
 
     def wait(self) -> None:
         now = time.monotonic()
         delta = now - self._last
-        if delta < self.min_interval:
-            time.sleep(self.min_interval - delta)
+        if delta < self.interval:
+            time.sleep(self.interval - delta)
         self._last = time.monotonic()
+
+    def penalize(self) -> None:
+        self.interval = min(self.max_interval, self.interval * 1.5)
+
+    def reward(self) -> None:
+        self.interval = max(self.base_interval, self.interval * 0.97)
 
 
 class GTClient:
@@ -62,15 +72,16 @@ class GTClient:
                 time.sleep(3 * (attempt + 1))
                 continue
             if r.status_code == 200:
+                self.limiter.reward()
                 try:
                     return r.json()
                 except ValueError:
                     return None
             if r.status_code == 429:
-                log.warning("429 rate limited on %s; backing off", path)
-                time.sleep(20 * (attempt + 1))
+                self.limiter.penalize()
+                time.sleep(5 * (attempt + 1))
                 continue
-            if r.status_code == 404:
+            if r.status_code in (404, 401):
                 return None
             log.warning("HTTP %d on %s", r.status_code, path)
             time.sleep(3 * (attempt + 1))
@@ -118,6 +129,21 @@ CREATE TABLE IF NOT EXISTS ohlcv_state (
     earliest_bar_ts INTEGER,
     last_fetch_at INTEGER,
     backfill_done INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS boosts (
+    token_address TEXT,
+    payment_ts INTEGER,
+    seen_ts INTEGER,
+    amount REAL,
+    total_amount REAL,
+    PRIMARY KEY (token_address, payment_ts, total_amount)
+);
+CREATE TABLE IF NOT EXISTS profiles (
+    token_address TEXT PRIMARY KEY,
+    seen_ts INTEGER,
+    has_twitter INTEGER,
+    has_telegram INTEGER,
+    has_website INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_pool ON snapshots(pool_address);
 CREATE INDEX IF NOT EXISTS idx_ohlcv_pool ON ohlcv(pool_address);
@@ -232,17 +258,81 @@ def snapshot_tracked(gt: GTClient, db: sqlite3.Connection,
 
 
 def snapshot_trending(gt: GTClient, db: sqlite3.Connection) -> int:
+    """Record trending events AND register trending pools in `pools` (so they
+    get tracked + OHLCV-backfilled). Their discovery is rank-conditioned —
+    only valid for entry-at-trending-event studies, never for population
+    stats; first_seen_at marks when we could first have traded them."""
     ts = int(time.time())
     n = 0
     for page in (1, 2):
-        data = gt.get("/networks/solana/trending_pools", {"page": page})
+        data = gt.get("/networks/solana/trending_pools",
+                      {"page": page, "duration": "5m", "include": "base_token,dex"})
         if not data or "data" not in data:
             continue
+        tokens = {inc["id"]: inc.get("attributes", {})
+                  for inc in (data.get("included") or [])
+                  if inc.get("type") == "token"}
         for item in data["data"]:
-            addr = (item.get("attributes") or {}).get("address")
-            if addr:
-                db.execute("INSERT OR IGNORE INTO trending VALUES (?,?)", (addr, ts))
+            a = item.get("attributes") or {}
+            addr = a.get("address")
+            if not addr:
+                continue
+            db.execute("INSERT OR IGNORE INTO trending VALUES (?,?)", (addr, ts))
+            rel = item.get("relationships") or {}
+            bt_id = (((rel.get("base_token") or {}).get("data") or {}).get("id")) or ""
+            base_mint = bt_id.split("_", 1)[1] if "_" in bt_id else None
+            tok = tokens.get(bt_id, {})
+            dex_id = (((rel.get("dex") or {}).get("data") or {}).get("id")) or None
+            db.execute(
+                "INSERT OR IGNORE INTO pools VALUES (?,?,?,?,?,?,?)",
+                (addr, base_mint, tok.get("symbol"), tok.get("name"), dex_id,
+                 a.get("pool_created_at"), now_iso()),
+            )
+            _insert_snapshot_row(db, ts, a)
+            n += 1
+    db.commit()
+    return n
+
+
+def snapshot_dexscreener_attention(db: sqlite3.Connection,
+                                   session: requests.Session) -> int:
+    """Poll DexScreener paid-promotion feeds (separate 60/min rate pool).
+    Boost payments are timestamped attention events usable in event studies."""
+    ts = int(time.time())
+    n = 0
+    try:
+        r = session.get("https://api.dexscreener.com/token-boosts/latest/v1",
+                        timeout=15)
+        if r.status_code == 200:
+            for b in r.json() or []:
+                if b.get("chainId") != "solana":
+                    continue
+                db.execute(
+                    "INSERT OR IGNORE INTO boosts VALUES (?,?,?,?,?)",
+                    (b.get("tokenAddress"),
+                     int((b.get("paymentTimestamp") or 0) / 1000) or ts,
+                     ts, f(b.get("amount")), f(b.get("totalAmount"))),
+                )
                 n += 1
+        r = session.get("https://api.dexscreener.com/token-profiles/latest/v1",
+                        timeout=15)
+        if r.status_code == 200:
+            for p in r.json() or []:
+                if p.get("chainId") != "solana":
+                    continue
+                links = p.get("links") or []
+                kinds = {(l.get("type") or l.get("label") or "").lower()
+                         for l in links}
+                db.execute(
+                    "INSERT OR IGNORE INTO profiles VALUES (?,?,?,?,?)",
+                    (p.get("tokenAddress"), ts,
+                     int("twitter" in kinds or "x" in kinds),
+                     int("telegram" in kinds),
+                     int(bool(p.get("url")) or "website" in kinds)),
+                )
+                n += 1
+    except requests.RequestException as e:
+        log.warning("dexscreener attention poll failed: %s", e)
     db.commit()
     return n
 
@@ -353,6 +443,8 @@ def main() -> int:
     db = sqlite3.connect(args.db)
     db.executescript(SCHEMA)
     gt = GTClient(RateLimiter(args.rate))
+    ds_session = requests.Session()
+    ds_session.headers.update(HEADERS)
     deadline = time.time() + args.hours * 3600
     cycle = 0
     while time.time() < deadline:
@@ -361,6 +453,7 @@ def main() -> int:
         try:
             n = snapshot_new_pools(gt, db, args.pages)
             trend = snapshot_trending(gt, db) if cycle % 4 == 1 else 0
+            snapshot_dexscreener_attention(db, ds_session)
             tracked = snapshot_tracked(gt, db)
             ohlcv_calls = backfill_ohlcv(gt, db, budget_calls=35)
             npools = db.execute("SELECT COUNT(*) FROM pools").fetchone()[0]

@@ -37,10 +37,13 @@ class SolanaRpc:
     # ---- token safety primitives -------------------------------------------
 
     def mint_info(self, mint: str) -> dict | None:
-        """Returns {mint_authority, freeze_authority, supply, decimals} or None."""
+        """Returns {mint_authority, freeze_authority, supply, decimals,
+        program} or None. program distinguishes vanilla spl-token from
+        Token-2022 (whose extensions can implement transfer taxes/honeypots)."""
         res = self.call("getAccountInfo", [mint, {"encoding": "jsonParsed"}])
-        info = ((((res or {}).get("value") or {}).get("data") or {})
-                .get("parsed") or {}).get("info")
+        value = (res or {}).get("value") or {}
+        data = value.get("data") or {}
+        info = (data.get("parsed") or {}).get("info")
         if not info:
             return None
         return {
@@ -48,6 +51,7 @@ class SolanaRpc:
             "freeze_authority": info.get("freezeAuthority"),
             "supply": int(info.get("supply") or 0),
             "decimals": int(info.get("decimals") or 0),
+            "program": data.get("program"),          # spl-token | spl-token-2022
         }
 
     def token_largest_accounts(self, mint: str) -> list[dict]:

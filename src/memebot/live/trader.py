@@ -198,10 +198,17 @@ class LiveTrader:
             except (TypeError, ValueError):
                 continue
         if moms:
+            mom = float(np.median(moms))
             cohort = self.strategy.events.setdefault("__cohort__", {})
-            cohort[int(now_ts)] = float(np.median(moms))
-            for k in [k for k in cohort if k < now_ts - 86400]:
-                del cohort[k]
+            cohort[int(now_ts)] = mom
+            # hysteresis regime gate for composite_v2: on@+2%, off@0%
+            prev = getattr(self, "_regime_on", 0)
+            self._regime_on = 1 if (mom >= 0.02 or (prev and mom >= 0.0)) else 0
+            gate = self.strategy.events.setdefault("__cohort_gate__", {})
+            gate[int(now_ts)] = self._regime_on
+            for d in (cohort, gate):
+                for k in [k for k in d if k < now_ts - 86400]:
+                    del d[k]
         # candidate watchlist: market-shape pass, ranked by 1h volume
         cands = [s for s in stats.values()
                  if s.address not in self.positions

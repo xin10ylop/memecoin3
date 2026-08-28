@@ -271,6 +271,24 @@ def cohort_momentum(pools: list["PoolData"], min_liq: float = 15_000,
     return {ts: float(np.median(v)) for ts, v in buckets.items() if v}
 
 
+def cohort_gate(cohort: dict[int, float], on: float = 0.02,
+                off: float = 0.0) -> dict[int, int]:
+    """Hysteresis regime gate over the cohort-momentum series: switches ON
+    when momentum crosses `on`, stays on until it drops below `off`.
+    Mining showed this beats a plain threshold (more time-in-market, fewer
+    whipsaws, CI-positive conditional returns in the hot window)."""
+    state = 0
+    out = {}
+    for ts in sorted(cohort):
+        m = cohort[ts]
+        if state == 0 and m >= on:
+            state = 1
+        elif state == 1 and m < off:
+            state = 0
+        out[ts] = state
+    return out
+
+
 def panel_summary(pools: list[PoolData]) -> pd.DataFrame:
     rows = []
     for p in pools:

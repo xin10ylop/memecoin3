@@ -37,10 +37,12 @@ strategy:
   params: {}                   # strategy-specific overrides; empty = tuned defaults
 
 exits:
-  stop_frac: 0.20              # hard stop below entry
-  trail_frac: 0.25             # trailing stop from high-water mark
-  tp_levels: [[0.5, 0.4]]      # [[gain_frac, sell_frac], ...] e.g. +50% -> sell 40%
-  max_hold_minutes: 360
+  # exit-opt mining plateau (research/mining/exit-opt.md): tight trail,
+  # NO early profit-taking, patient hold — early TPs were strictly worst
+  stop_frac: 0.15              # hard stop below entry
+  trail_frac: 0.18             # trailing stop from high-water mark
+  tp_levels: []                # no TP ladder; the trail is the exit
+  max_hold_minutes: 300
   liquidity_drop_exit_frac: 0.5   # reserve dropping this much in 5m forces exit
 
 live:

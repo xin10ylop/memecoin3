@@ -59,7 +59,18 @@ class Strategy:
     events: dict = field(default_factory=dict)
 
     def prepare(self, pool: PoolData) -> pd.DataFrame:
-        return add_features(pool.df, pool.meta.created_ts)
+        # features depend only on (df, created_ts) — identical across every
+        # strategy/config, so memoize on the pool object (grid searches
+        # re-prepare each pool hundreds of times otherwise)
+        cached = getattr(pool, "_feat_cache", None)
+        if cached is not None:
+            return cached
+        feat = add_features(pool.df, pool.meta.created_ts)
+        try:
+            pool._feat_cache = feat
+        except AttributeError:
+            pass
+        return feat
 
     def entries(self, pool: PoolData, df: pd.DataFrame) -> np.ndarray:
         sig = self.entry_fn(df, {**self.params, "_pool": pool, "_events": self.events})
@@ -255,6 +266,64 @@ def _boost_follow(df: pd.DataFrame, p: dict) -> np.ndarray:
     return sig
 
 
+# G. composite v2 (pre-registered 2026-08-28 from the alpha-mining pass;
+# see research/mining/*.md). Every condition is a mining survivor that was
+# sign-consistent across both collected windows:
+#   * hysteresis cohort regime gate (on@+2%, off@0%)
+#   * near high-water mark (dd_from_high floor)  — strongest IC
+#   * turnover floor (vol_5m/reserve) with a wash-cap (vol_h1/reserve <= 10)
+#   * buyer-flow floor (buyers_per_min) and buyer dominance (buy_frac)
+#   * chop filter (rv_30 cap)
+#   * NO-CHASE: no entry within 30 min after first trending appearance
+# Data through 2026-08-28 is the DESIGN sample for this family — results on
+# it are exploratory; confirmation requires later windows / paper forward.
+
+def _composite_v2(df: pd.DataFrame, p: dict) -> np.ndarray:
+    pool: PoolData = p["_pool"]
+    events: dict = p["_events"]
+    n = len(df)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    gate: dict = events.get("__cohort_gate__") or {}
+    if not gate:
+        return np.zeros(n, dtype=bool)
+    ts = df.index.to_numpy()
+    keys = np.array(sorted(gate))
+    vals = np.array([gate[k] for k in keys])
+    idx = np.searchsorted(keys, ts, side="right") - 1
+    on = np.where(idx >= 0, vals[np.clip(idx, 0, None)], 0)
+    stale = np.where(idx >= 0, ts - keys[np.clip(idx, 0, None)], 1e12)
+    regime_on = pd.Series((on == 1) & (stale <= 600), index=df.index)
+
+    turnover = (df["vol_5m"].astype(float)
+                / df["reserve_usd"].astype(float).replace(0.0, np.nan))
+    wash = (df["vol_h1_snap"].astype(float)
+            / df["reserve_usd"].astype(float).replace(0.0, np.nan))
+    trend_ts = events.get(pool.meta.address)
+    no_chase = pd.Series(True, index=df.index)
+    if trend_ts is not None:
+        no_chase = ~pd.Series(
+            (ts >= trend_ts) & (ts < trend_ts + 1800), index=df.index)
+
+    cond = (
+        regime_on
+        & _liq_ok(df, p["min_liq"])
+        & _universe_ok(df)
+        & (df["age_min"] >= p["min_age_min"])
+        & (df["age_min"] <= p["max_age_min"])
+        & (df["dd_from_high"] >= -p["max_dd"])
+        & turnover.ge(p["min_turnover"])
+        & (wash.le(10.0) | wash.isna())
+        & df["buyers_per_min"].pipe(
+            lambda s: s.ge(p["min_buyers_pm"]) | s.isna())
+        & _buyer_ok(df, p["min_buy_frac"])
+        & df["rv_30"].pipe(lambda s: s.le(p["max_rv30"]) | s.isna())
+        & (df["ret_15m"] > 0)
+        & no_chase
+    )
+    return cond.fillna(False).to_numpy()
+
+
 # placebo negative control: random entries through the SAME liquidity gate,
 # exits, and cost machinery. If a "real" strategy doesn't beat this by a
 # clear margin, its edge is the exit/cost machinery or the window, not the
@@ -305,6 +374,11 @@ DEFAULTS: dict[str, dict] = {
     "boost_follow": {
         "max_age_min": 2880, "min_liq": 15_000,
     },
+    "composite_v2": {
+        "min_age_min": 15, "max_age_min": 720, "min_liq": 15_000,
+        "max_dd": 0.15, "min_turnover": 0.02, "min_buyers_pm": 1.0,
+        "min_buy_frac": 0.55, "max_rv30": 0.08,
+    },
 }
 
 ENTRY_FNS = {
@@ -315,6 +389,7 @@ ENTRY_FNS = {
     "random_entries": _random_entries,
     "regime_gated": _regime_gated,
     "boost_follow": _boost_follow,
+    "composite_v2": _composite_v2,
 }
 
 

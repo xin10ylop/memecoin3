@@ -1,0 +1,19 @@
+# Paper-trading config for the current forward test.
+# Strategy: regime_gated — the only family whose out-of-sample stats
+# cleared every validation criterion except the beat-placebo bar (which is
+# undecidable in an always-hot window). Paper forward-testing IS its
+# confirmation experiment. See research/results/REPORT.md.
+
+strategy:
+  name: regime_gated
+  params: {}
+
+capital:
+  starting_usd: 100.0
+  risk_per_trade_usd: 25.0
+  max_concurrent: 4
+  max_exposure_frac: 0.5
+
+live:
+  gt_rate_per_min: 8      # leave API budget to the collector on this host
+  state_db: data/live.db

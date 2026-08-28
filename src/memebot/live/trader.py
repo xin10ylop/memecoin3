@@ -184,6 +184,24 @@ class LiveTrader:
                     stats[s.address] = s
         for s in stats.values():
             self._record_snap(s)
+        # live cohort momentum for regime_gated: median 30m price change
+        # across liquidity-qualified pools in this sweep (same "is the tape
+        # paying" factor the backtest computes from bars)
+        moms = []
+        for s in stats.values():
+            pc = ((s.raw.get("price_change_percentage") or {}).get("m30"))
+            if pc is None or not s.reserve_usd \
+                    or s.reserve_usd < self.cfg.safety.min_liquidity_usd:
+                continue
+            try:
+                moms.append(float(pc) / 100.0)
+            except (TypeError, ValueError):
+                continue
+        if moms:
+            cohort = self.strategy.events.setdefault("__cohort__", {})
+            cohort[int(now_ts)] = float(np.median(moms))
+            for k in [k for k in cohort if k < now_ts - 86400]:
+                del cohort[k]
         # candidate watchlist: market-shape pass, ranked by 1h volume
         cands = [s for s in stats.values()
                  if s.address not in self.positions

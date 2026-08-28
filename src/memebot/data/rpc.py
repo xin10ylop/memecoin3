@@ -74,18 +74,24 @@ class SolanaRpc:
             return None
 
     def sol_balance_lamports(self, pubkey: str) -> int | None:
-        res = self.call("getBalance", [pubkey])
+        # commitment must match tx confirmation level ("confirmed") or fill
+        # detection races ~13s of finalization lag
+        res = self.call("getBalance", [pubkey, {"commitment": "confirmed"}])
         try:
             return int(res["value"])
         except (KeyError, TypeError, ValueError):
             return None
 
-    def token_balance(self, owner: str, mint: str) -> int:
-        """Sum of base units across the owner's token accounts for mint."""
+    def token_balance(self, owner: str, mint: str) -> int | None:
+        """Sum of base units across the owner's token accounts for mint.
+        Returns None on RPC failure — callers must not treat that as zero."""
         res = self.call("getTokenAccountsByOwner",
-                        [owner, {"mint": mint}, {"encoding": "jsonParsed"}])
+                        [owner, {"mint": mint},
+                         {"encoding": "jsonParsed", "commitment": "confirmed"}])
+        if res is None:
+            return None
         total = 0
-        for acc in (res or {}).get("value") or []:
+        for acc in res.get("value") or []:
             try:
                 amt = acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]
                 total += int(amt)

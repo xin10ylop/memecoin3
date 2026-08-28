@@ -39,6 +39,15 @@ class ExitRules:
     max_hold_min: int = 360
     liq_drop_exit_frac: float = 0.5
 
+    def __post_init__(self):
+        levels = tuple(tuple(lv) for lv in (self.tp_levels or ()))
+        for lv in levels:
+            if len(lv) != 2:
+                raise ValueError(
+                    f"tp_levels must be pairs [[gain, sell_frac], ...]; "
+                    f"got {self.tp_levels!r}")
+        self.tp_levels = levels
+
 
 @dataclass
 class Strategy:
@@ -248,6 +257,10 @@ def make_strategy(name: str, params: dict | None = None,
                   events: dict | None = None) -> Strategy:
     if name not in ENTRY_FNS:
         raise ValueError(f"unknown strategy {name!r}; have {sorted(ENTRY_FNS)}")
+    unknown = set(params or {}) - set(DEFAULTS[name])
+    if unknown:
+        raise ValueError(f"unknown params for {name}: {sorted(unknown)}; "
+                         f"valid: {sorted(DEFAULTS[name])}")
     merged = {**DEFAULTS[name], **(params or {})}
     return Strategy(name=name, params=merged,
                     exit_rules=exit_rules or ExitRules(),

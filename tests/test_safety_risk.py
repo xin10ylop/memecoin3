@@ -69,11 +69,19 @@ def test_onchain_rejects_concentration_excluding_pool_vault():
                 for i in range(10)])
     g = gate(rpc=FakeRpc(largest=largest))          # rest = 5000/10000 = 50%
     assert not g.check_onchain("MINT").ok
-    largest2 = ([{"address": "vault", "amount": 8_000, "ui_amount": 8000}] +
+    # realistic healthy graduate: vault ~30% of supply, dispersed holders
+    largest2 = ([{"address": "vault", "amount": 3_000, "ui_amount": 3000}] +
                 [{"address": f"w{i}", "amount": 100, "ui_amount": 100}
                  for i in range(10)])                # rest = 1000/10000 = 10%
     g2 = gate(rpc=FakeRpc(largest=largest2))
     assert g2.check_onchain("MINT").ok
+    # backstop: even if the largest account is excluded as "the vault", a
+    # top-10-including-largest share above 75% is rejected
+    largest3 = ([{"address": "whale", "amount": 8_000, "ui_amount": 8000}] +
+                [{"address": f"w{i}", "amount": 100, "ui_amount": 100}
+                 for i in range(10)])
+    g3 = gate(rpc=FakeRpc(largest=largest3))
+    assert not g3.check_onchain("MINT").ok
 
 
 def test_sellability_rejects_honeypot():

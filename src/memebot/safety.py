@@ -87,6 +87,13 @@ class SafetyGate:
                 if frac > c.max_top10_holder_frac:
                     reasons.append(f"top10 holders {frac:.0%} > "
                                    f"{c.max_top10_holder_frac:.0%}")
+                # The exclusion is an ASSUMPTION — if the largest account is
+                # actually an insider (not the vault), the check above is
+                # blind to it. Cap total top-10 concentration including the
+                # largest account as a backstop.
+                frac_incl = sum(a["amount"] for a in largest[:10]) / supply
+                if frac_incl > 0.75:
+                    reasons.append(f"top10 incl largest {frac_incl:.0%} > 75%")
             else:
                 reasons.append("holder list unreadable")
         return SafetyVerdict(not reasons, reasons)
@@ -94,16 +101,21 @@ class SafetyGate:
     # -- 4. sellability via Jupiter ------------------------------------------
     def check_sellability(self, mint: str, position_usd: float,
                           sol_price_usd: float) -> SafetyVerdict:
+        """Probes at 2x the position size: the exit that matters is the
+        stressed full exit, and depth must exist beyond our own clip."""
         c = self.cfg
         reasons = []
         probe_lamports = max(10_000_000,
-                             int(position_usd / max(sol_price_usd, 1) * 1e9))
+                             int(2 * position_usd / max(sol_price_usd, 1) * 1e9))
         rt = self.jup.roundtrip_loss_frac(mint, probe_lamports)
         if rt is None:
             reasons.append("no jupiter route (unsellable)")
         elif rt > c.roundtrip_max_loss_frac:
-            reasons.append(f"roundtrip loss {rt:.1%} > "
-                           f"{c.roundtrip_max_loss_frac:.0%} (tax/honeypot)")
+            reasons.append(f"2x-size roundtrip loss {rt:.1%} > "
+                           f"{c.roundtrip_max_loss_frac:.0%} (tax/honeypot/thin)")
+        elif rt > c.sell_quote_max_impact_frac:
+            reasons.append(f"2x-size roundtrip loss {rt:.1%} > impact bound "
+                           f"{c.sell_quote_max_impact_frac:.0%}")
         return SafetyVerdict(not reasons, reasons)
 
     def full_check(self, p: PoolStats, position_usd: float,

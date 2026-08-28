@@ -59,7 +59,13 @@ def cmd_backtest(args, cfg) -> int:
     pools = load_panel(args.db, min_max_reserve=args.min_reserve)
     print(f"panel: {len(pools)} pools", file=sys.stderr)
     events = trending_first_seen(args.db) if args.strategy == "trending_follow" else {}
-    params = json.loads(args.params) if args.params else {}
+    # base params come from the config when it names the same strategy, so
+    # what you backtest is what `memebot paper/live --config X` will trade
+    params = {}
+    if cfg.strategy.name == args.strategy and cfg.strategy.get("params"):
+        params.update(cfg.strategy.get("params").raw())
+    if args.params:
+        params.update(json.loads(args.params))
     strat = make_strategy(args.strategy, params, _exit_rules(cfg), events=events)
     res = run_backtest(pools, strat, _cost_model(cfg), _risk_params(cfg))
     s = summarize(res, label=args.strategy)
@@ -81,9 +87,11 @@ def cmd_panel(args, cfg) -> int:
 
 def cmd_grid(args, cfg) -> int:
     pools = load_panel(args.db, min_max_reserve=args.min_reserve)
+    events = trending_first_seen(args.db) if args.strategy == "trending_follow" else None
     grid = GridSpec(strategy=args.strategy,
                     param_grid=json.loads(args.param_grid),
-                    exit_grid=json.loads(args.exit_grid))
+                    exit_grid=json.loads(args.exit_grid),
+                    events=events)
     df = grid_report(pools, grid, _cost_model(cfg), _risk_params(cfg))
     df.to_csv(args.out, index=False)
     print(df.sort_values("expectancy_ci_lo", ascending=False)
@@ -93,9 +101,11 @@ def cmd_grid(args, cfg) -> int:
 
 def cmd_walkforward(args, cfg) -> int:
     pools = load_panel(args.db, min_max_reserve=args.min_reserve)
+    events = trending_first_seen(args.db) if args.strategy == "trending_follow" else None
     grid = GridSpec(strategy=args.strategy,
                     param_grid=json.loads(args.param_grid),
-                    exit_grid=json.loads(args.exit_grid))
+                    exit_grid=json.loads(args.exit_grid),
+                    events=events)
     out = walk_forward(pools, grid, _cost_model(cfg), _risk_params(cfg),
                        n_folds=args.folds, min_trades=args.min_trades)
     print(json.dumps(out, indent=2, default=str))
@@ -104,8 +114,9 @@ def cmd_walkforward(args, cfg) -> int:
 
 def cmd_trade(args, cfg, live: bool) -> int:
     from .live.trader import LiveTrader
-    if live:
-        cfg._d["mode"] = "live"
+    # the subcommand is authoritative: `memebot paper` must NEVER trade real
+    # funds, even if the yaml says mode: live and MEMEBOT_LIVE=YES is set
+    cfg._d["mode"] = "live" if live else "paper"
     trader = LiveTrader(cfg)
     trader.run()
     return 0

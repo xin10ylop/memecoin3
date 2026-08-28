@@ -32,6 +32,7 @@ class RiskParams:
     max_concurrent: int = 4
     daily_loss_limit_frac: float = 0.10
     max_pool_share: float = 0.005
+    max_exposure_frac: float = 0.5  # live parity: cap deployed capital
     cooldown_min: int = 60          # per-pool cooldown after an exit
     # bars between signal close and entry fill. 2 models the live path
     # (60s scan cadence + GT indexing lag); 1 = idealized next-bar-open.
@@ -214,7 +215,7 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
     candidates.sort(key=lambda x: x[0])
 
     # 2) chronological portfolio pass with caps
-    open_until: list[tuple[int, str]] = []       # (exit_ts, pool)
+    open_until: list[tuple[int, str, float]] = []   # (exit_ts, pool, size)
     pool_cooldown_until: dict[str, int] = {}
     realized: list[tuple[int, float]] = []       # (exit_ts, pnl)
     trades: list[Trade] = []
@@ -230,12 +231,17 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
 
     for fill_ts, pool, df, fill_idx in candidates:
         addr = pool.meta.address
-        open_until = [(e, a) for (e, a) in open_until if e > fill_ts]
-        if any(a == addr for (_, a) in open_until):
+        open_until = [(e, a, s) for (e, a, s) in open_until if e > fill_ts]
+        if any(a == addr for (_, a, _s) in open_until):
             continue                                # already in this pool
         if pool_cooldown_until.get(addr, 0) > fill_ts:
             continue
         if len(open_until) >= risk.max_concurrent:
+            n_skipped += 1
+            continue
+        deployed = sum(s for (_, _a, s) in open_until)
+        if deployed + risk.risk_per_trade_usd \
+                > risk.max_exposure_frac * risk.starting_usd:
             n_skipped += 1
             continue
         if day_of(fill_ts) in halted_days:
@@ -258,7 +264,7 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
         if trade is None:
             continue
         trades.append(trade)
-        open_until.append((trade.exit_ts, addr))
+        open_until.append((trade.exit_ts, addr, trade.size_usd))
         pool_cooldown_until[addr] = trade.exit_ts + risk.cooldown_min * 60
         realized.append((trade.exit_ts, trade.pnl_usd))
         realized.sort()

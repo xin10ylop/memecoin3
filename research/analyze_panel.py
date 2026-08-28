@@ -33,14 +33,18 @@ HORIZONS_MIN = [5, 15, 30, 60, 120, 240, 480]
 
 
 def survival_from_index(df: pd.DataFrame, i0: int) -> dict:
-    """Forward gross returns from bar i0's close at fixed horizons."""
+    """Forward gross returns from bar i0's close at fixed horizons.
+
+    Pools whose data ends before a horizon contribute their TERMINAL price
+    (last close) at that horizon — dropping them would resurrect
+    survivorship bias exactly where death matters most."""
     c = df["c"].to_numpy(dtype=float)
     ts = df.index.to_numpy()
     t0, p0 = ts[i0], c[i0]
     out = {}
     for h in HORIZONS_MIN:
         j = np.searchsorted(ts, t0 + h * 60, side="left")
-        out[f"fwd_{h}m"] = c[min(j, len(c) - 1)] / p0 if j < len(c) else np.nan
+        out[f"fwd_{h}m"] = c[min(j, len(c) - 1)] / p0
     seg = c[i0:]
     out["fwd_peak"] = seg.max() / p0
     out["fwd_trough"] = seg.min() / p0

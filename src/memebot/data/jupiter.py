@@ -76,15 +76,18 @@ class Jupiter:
                       priority_lamports: int = 1_000_000) -> str | None:
         """Returns base64 unsigned VersionedTransaction (live mode only).
 
-        dynamicSlippage lets Jupiter pick effective slippage capped by the
-        quote's slippageBps; the response's simulationError is checked so a
-        transaction that already fails simulation is never signed."""
+        dynamicSlippage is deliberately OFF: it substitutes Jupiter's own
+        slippage heuristic for the quote's slippageBps, making the
+        configured tolerance decorative. The response's simulationError is
+        checked so a transaction that already fails simulation is never
+        signed; a short blockhash validity window makes timed-out
+        transactions expire quickly instead of landing minutes later."""
         data = self.http.post_json(f"{BASE}/swap/v1/swap", {
             "quoteResponse": quote_response,
             "userPublicKey": user_pubkey,
             "wrapAndUnwrapSol": True,
             "dynamicComputeUnitLimit": True,
-            "dynamicSlippage": True,
+            "blockhashSlotsToExpiry": 40,
             "prioritizationFeeLamports": {
                 "priorityLevelWithMaxLamports": {
                     "priorityLevel": "high",

@@ -103,28 +103,26 @@ def cost_stress(pools, name, params, exit_params, events) -> list[dict]:
     return rows
 
 
-def verdict(oos: list[dict], placebo_mean: float, stress: list[dict]) -> tuple[bool, list[str]]:
+def verdict(pooled: dict | None, placebo_hi: float,
+            stress: list[dict]) -> tuple[bool, list[str]]:
+    """All criteria evaluated on the POOLED out-of-sample trades (never
+    per-fold means) and on OOS-only cost stress."""
     reasons = []
-    if not oos:
-        return False, ["no out-of-sample folds evaluable"]
-    n_tr = sum(s.get("n_trades", 0) for s in oos)
-    n_tok = sum(s.get("n_tokens", 0) for s in oos)
-    if n_tr < 30:
-        reasons.append(f"only {n_tr} OOS trades (<30)")
-    if n_tok < 20:
-        reasons.append(f"only {n_tok} OOS tokens (<20)")
-    ci_los = [s.get("expectancy_ci_lo") for s in oos if s.get("n_trades", 0) > 0]
-    if not ci_los or min(ci_los) is None or min(ci_los) <= 0:
-        reasons.append("OOS cluster-bootstrap CI includes <= 0")
-    exps = [s.get("expectancy_ret", 0) for s in oos if s.get("n_trades", 0) > 0]
-    if exps and np.mean(exps) <= placebo_mean:
-        reasons.append("does not beat placebo")
+    if not pooled or pooled.get("n_trades", 0) == 0:
+        return False, ["no pooled out-of-sample trades"]
+    if pooled["n_trades"] < 30:
+        reasons.append(f"only {pooled['n_trades']} OOS trades (<30)")
+    if pooled.get("n_tokens", 0) < 20:
+        reasons.append(f"only {pooled.get('n_tokens', 0)} OOS tokens (<20)")
+    if (pooled.get("expectancy_ci_lo") or -1) <= 0:
+        reasons.append("pooled OOS cluster-bootstrap CI includes <= 0")
+    if pooled.get("expectancy_ret", 0) <= placebo_hi:
+        reasons.append(f"does not beat placebo upper CI ({placebo_hi:.4f})")
     two_x = next((s for s in stress if s["label"].endswith("@2x")), None)
     if not two_x or (two_x.get("total_pnl_usd") or 0) <= 0:
-        reasons.append("dies at 2x costs")
-    minus3 = [s.get("pnl_minus_top3") for s in oos if s.get("n_trades", 0) > 3]
-    if minus3 and all((m or 0) <= 0 for m in minus3):
-        reasons.append("P&L carried entirely by top-3 trades")
+        reasons.append("dies at 2x costs (OOS)")
+    if pooled["n_trades"] > 3 and (pooled.get("pnl_minus_top3") or 0) <= 0:
+        reasons.append("pooled OOS P&L carried entirely by top-3 trades")
     return (not reasons), reasons
 
 
@@ -150,7 +148,13 @@ def main() -> int:
                     and r.get("n_trades", 0) > 0]
     placebo_mean = (float(np.mean([r["expectancy_ret"] for r in placebo_rows]))
                     if placebo_rows else 0.0)
-    lines.append(f"placebo mean expectancy: {placebo_mean:.4f}")
+    # bar to beat: placebo upper CI (protocol: mean + CI width), averaged
+    # over seeds; 0 when the placebo never trades
+    placebo_hi = (float(np.mean([r.get("expectancy_ci_hi", 0) or 0
+                                 for r in placebo_rows]))
+                  if placebo_rows else 0.0)
+    lines.append(f"placebo mean expectancy: {placebo_mean:.4f}; "
+                 f"upper-CI bar to beat: {placebo_hi:.4f}")
     lines.append("")
 
     # 3-5. per-family grid + walk-forward + stress
@@ -168,21 +172,25 @@ def main() -> int:
         (OUT / f"walkforward_{name}.json").write_text(
             json.dumps(wf, indent=2, default=str))
         oos = wf["oos"]
-        lines += [f"### {name} — walk-forward OOS", "```",
-                  summary_table(oos).to_string(index=False) if oos else "no folds",
+        pooled = wf.get("oos_pooled")
+        lines += [f"### {name} — walk-forward OOS (per fold + pooled)", "```",
+                  summary_table(oos + ([pooled] if pooled else []))
+                  .to_string(index=False) if oos else "no folds",
                   "```", ""]
 
         picks = [p for p in wf["picks"] if p]
-        if picks:
+        oos_addrs = set(wf.get("oos_pool_addresses") or [])
+        oos_only = [p for p in pools if p.meta.address in oos_addrs]
+        if picks and oos_only:
             last = picks[-1]
-            stress = cost_stress(pools, name, last["params"],
+            stress = cost_stress(oos_only, name, last["params"],
                                  last["exit_params"], ev)
-            lines += [f"### {name} — cost stress (full panel, last pick)",
+            lines += [f"### {name} — cost stress (OOS pools only, last pick)",
                       "```", summary_table(stress).to_string(index=False),
                       "```", ""]
         else:
             stress = []
-        ok, reasons = verdict(oos, placebo_mean, stress)
+        ok, reasons = verdict(pooled, placebo_hi, stress)
         verdicts[name] = (ok, reasons)
         lines += [f"### {name} — VERDICT: "
                   f"{'VALIDATED' if ok else 'NOT VALIDATED'}"]

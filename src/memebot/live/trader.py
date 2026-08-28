@@ -78,13 +78,24 @@ class LiveTrader:
         if cfg.mode == "live" and not live_trading_armed():
             log.warning("config mode=live but MEMEBOT_LIVE!=YES -> running PAPER")
         if self.is_live:
-            self.executor = JupiterExecutor(self.jup, self.rpc)
+            self.executor = JupiterExecutor(
+                self.jup, self.rpc, wallet_min_sol=cfg.live.wallet_min_sol)
         else:
             self.executor = PaperExecutor(self.costs)
 
         self.positions: dict[str, OpenPosition] = self.state.load_positions()
         cash = self.state.get_kv("cash_usd")
-        self.cash = float(cash) if cash is not None else cfg.capital.starting_usd
+        if cash is not None:
+            self.cash = float(cash)
+        elif self.is_live:
+            # live books start from the actual wallet, not paper fiction
+            px = self.jup.prices_usd([SOL_MINT])
+            sol_usd = px.get(SOL_MINT, 100.0)
+            lam = self.rpc.sol_balance_lamports(self.executor.pubkey)
+            self.cash = (lam or 0) / 1e9 * sol_usd
+            log.info("live cash seeded from wallet: $%.2f", self.cash)
+        else:
+            self.cash = cfg.capital.starting_usd
         # rolling snapshot history per pool for feature building + liq exits
         self.snap_hist: dict[str, deque] = {}
         self.pool_stats: dict[str, PoolStats] = {}
@@ -215,7 +226,12 @@ class LiveTrader:
             return
         ref_price = st.price_usd or float(df["c"].iloc[-1])
         info = self.rpc.mint_info(st.base_mint)
-        decimals = int(info["decimals"]) if info else 6
+        if info is None:
+            # never assume decimals: a wrong value corrupts every
+            # subsequent price/PnL computation for the position
+            log.warning("mint info unreadable for %s; skipping entry", st.symbol)
+            return
+        decimals = int(info["decimals"])
         rep = self._exec_buy(st, size, ref_price, decimals)
         if not rep.ok or rep.tokens <= 0:
             log.warning("buy failed %s: %s", st.symbol, rep.detail)
@@ -311,11 +327,13 @@ class LiveTrader:
                    reserve: float | None, frac: float, reason: str,
                    stressed: bool) -> bool:
         qty = pos.tokens * frac
+        full_exit = frac >= 0.999
         if self.is_live:
             rep = self.executor.sell(pos.mint, qty, px, reserve,
                                      self.sol_price,
                                      token_decimals=pos.decimals,
-                                     stressed=stressed)
+                                     stressed=stressed,
+                                     sell_all=full_exit)
         else:
             rep = self.executor.sell(pos.mint, qty, px, reserve, stressed)
         if not rep.ok:

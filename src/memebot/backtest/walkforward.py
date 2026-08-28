@@ -18,6 +18,9 @@ from .costs import CostModel
 from .engine import RiskParams, run_backtest
 from .metrics import log_registry, summarize
 
+__all__ = ["GridSpec", "grid_report", "walk_forward", "eval_config",
+           "select_best", "split_by_launch"]
+
 
 @dataclass
 class GridSpec:
@@ -98,11 +101,19 @@ def walk_forward(pools: list[PoolData], grid: GridSpec, costs: CostModel,
     embargo_sec = max((max(grid.exit_grid.get("max_hold_min", [360])) * 60), 3600)
     oos_summaries = []
     picks = []
+    pooled_trades = []
+    oos_pools: list[PoolData] = []
     for i in range(n_folds - 1):
         train = [p for f in folds[: i + 1] for p in f]
-        boundary = max((p.meta.created_ts or 0) for p in train)
+        if not train or not folds[i + 1]:
+            picks.append(None)
+            continue
+        boundary = max(p.meta.created_ts for p in train)
         test = [p for p in folds[i + 1]
                 if (p.meta.created_ts or 0) >= boundary + embargo_sec]
+        if not test:
+            picks.append(None)
+            continue
         train_rows = []
         for params, exit_params in _configs(grid):
             s = eval_config(train, grid, params, exit_params, costs, risk)
@@ -115,7 +126,31 @@ def walk_forward(pools: list[PoolData], grid: GridSpec, costs: CostModel,
                       "exit_params": best["exit_params"],
                       "train_expectancy": best["expectancy_ret"],
                       "train_n": best["n_trades"]})
-        oos = eval_config(test, grid, best["params"], best["exit_params"],
-                          costs, risk, label=f"oos_fold_{i + 1}")
-        oos_summaries.append(oos)
-    return {"picks": picks, "oos": oos_summaries}
+        strat = make_strategy(grid.strategy, best["params"],
+                              ExitRules(**best["exit_params"]),
+                              events=grid.events)
+        res = run_backtest(test, strat, costs, risk)
+        oos_summaries.append(summarize(res, label=f"oos_fold_{i + 1}"))
+        pooled_trades.extend(res.trades)
+        oos_pools.extend(test)
+    # pooled OOS: statistics over the CONCATENATED out-of-sample trades —
+    # per-fold means weight a 1-trade fold like a 100-trade fold
+    pooled = None
+    if pooled_trades:
+        import pandas as pd
+
+        from .engine import BacktestResult
+        pooled_trades.sort(key=lambda t: t.exit_ts)
+        eq = risk.starting_usd + np.cumsum([t.pnl_usd for t in pooled_trades])
+        pooled_res = BacktestResult(
+            trades=pooled_trades,
+            equity=pd.Series(
+                np.concatenate([[risk.starting_usd], eq]),
+                index=[pooled_trades[0].entry_ts]
+                      + [t.exit_ts for t in pooled_trades], dtype=float),
+            n_candidates=sum(s.get("n_candidates", 0) for s in oos_summaries),
+            n_skipped_risk=sum(s.get("n_skipped_risk", 0) for s in oos_summaries),
+        )
+        pooled = summarize(pooled_res, label="oos_pooled")
+    return {"picks": picks, "oos": oos_summaries, "oos_pooled": pooled,
+            "oos_pool_addresses": [p.meta.address for p in oos_pools]}

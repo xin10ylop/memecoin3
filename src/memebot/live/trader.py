@@ -214,7 +214,9 @@ class LiveTrader:
             self.pool_cooldown[pool] = now + 1800
             return
         ref_price = st.price_usd or float(df["c"].iloc[-1])
-        rep = self._exec_buy(st, size, ref_price)
+        info = self.rpc.mint_info(st.base_mint)
+        decimals = int(info["decimals"]) if info else 6
+        rep = self._exec_buy(st, size, ref_price, decimals)
         if not rep.ok or rep.tokens <= 0:
             log.warning("buy failed %s: %s", st.symbol, rep.detail)
             return
@@ -222,17 +224,19 @@ class LiveTrader:
         pos = OpenPosition(pool=pool, mint=st.base_mint, symbol=st.symbol,
                            entry_ts=now, entry_price=rep.price,
                            tokens=rep.tokens, size_usd=rep.usd,
-                           hwm_price=rep.price)
+                           hwm_price=rep.price, decimals=decimals)
         self.positions[pool] = pos
         self.state.save_position(pos)
         self.state.set_kv("cash_usd", str(self.cash))
         self.notify.send(f"ENTER {st.symbol} ${rep.usd:.0f} @ {rep.price:.8f} "
                          f"({'LIVE' if self.is_live else 'paper'})")
 
-    def _exec_buy(self, st: PoolStats, size: float, ref_price: float) -> ExecutionReport:
+    def _exec_buy(self, st: PoolStats, size: float, ref_price: float,
+                  decimals: int = 6) -> ExecutionReport:
         if self.is_live:
             return self.executor.buy(st.base_mint, size, ref_price,
-                                     st.reserve_usd, self.sol_price)
+                                     st.reserve_usd, self.sol_price,
+                                     token_decimals=decimals)
         return self.executor.buy(st.base_mint, size, ref_price, st.reserve_usd)
 
     # ------------------------------------------------------------------ exits
@@ -309,7 +313,9 @@ class LiveTrader:
         qty = pos.tokens * frac
         if self.is_live:
             rep = self.executor.sell(pos.mint, qty, px, reserve,
-                                     self.sol_price, stressed=stressed)
+                                     self.sol_price,
+                                     token_decimals=pos.decimals,
+                                     stressed=stressed)
         else:
             rep = self.executor.sell(pos.mint, qty, px, reserve, stressed)
         if not rep.ok:

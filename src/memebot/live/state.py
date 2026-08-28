@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS positions (
     mint TEXT, symbol TEXT,
     entry_ts REAL, entry_price REAL,
     tokens REAL, size_usd REAL, hwm_price REAL,
-    tp_taken TEXT DEFAULT '[]'
+    tp_taken TEXT DEFAULT '[]',
+    decimals INTEGER DEFAULT 6
 );
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,6 +35,11 @@ class StateStore:
     def __init__(self, path: str):
         self.db = sqlite3.connect(path)
         self.db.executescript(SCHEMA)
+        # migrate pre-decimals databases
+        cols = [r[1] for r in self.db.execute("PRAGMA table_info(positions)")]
+        if "decimals" not in cols:
+            self.db.execute("ALTER TABLE positions ADD COLUMN decimals "
+                            "INTEGER DEFAULT 6")
         self.db.commit()
 
     # -- kv ------------------------------------------------------------------
@@ -48,19 +54,24 @@ class StateStore:
     # -- positions -----------------------------------------------------------
     def load_positions(self) -> dict[str, OpenPosition]:
         out = {}
-        for r in self.db.execute("SELECT * FROM positions").fetchall():
+        rows = self.db.execute(
+            "SELECT pool, mint, symbol, entry_ts, entry_price, tokens, "
+            "size_usd, hwm_price, tp_taken, decimals FROM positions").fetchall()
+        for r in rows:
             out[r[0]] = OpenPosition(
                 pool=r[0], mint=r[1], symbol=r[2], entry_ts=r[3],
                 entry_price=r[4], tokens=r[5], size_usd=r[6], hwm_price=r[7],
-                tp_taken=json.loads(r[8] or "[]"),
+                tp_taken=json.loads(r[8] or "[]"), decimals=int(r[9] or 6),
             )
         return out
 
     def save_position(self, p: OpenPosition) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO positions "
+            "(pool, mint, symbol, entry_ts, entry_price, tokens, size_usd, "
+            "hwm_price, tp_taken, decimals) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (p.pool, p.mint, p.symbol, p.entry_ts, p.entry_price, p.tokens,
-             p.size_usd, p.hwm_price, json.dumps(p.tp_taken)),
+             p.size_usd, p.hwm_price, json.dumps(p.tp_taken), p.decimals),
         )
         self.db.commit()
 

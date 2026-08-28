@@ -23,6 +23,7 @@ class OpenPosition:
     size_usd: float
     hwm_price: float
     tp_taken: list = field(default_factory=list)
+    decimals: int = 6           # token decimals (fetched from mint at entry)
 
 
 class RiskManager:

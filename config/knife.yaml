@@ -4,9 +4,12 @@
 # use_regime=1 sizes it to zero on cool tape. This paper run IS the
 # clean forward window the autopsy demanded.
 
+# VALIDATED 2026-08-28 (research/results/REPORT.md): the walk-forward pick
+# was stable across folds — min_dip 0.35, use_regime 0, stop 0.35,
+# 60-min hold — and survives 3x costs. Forward-testing exactly that spec.
 strategy:
   name: knife_catch
-  params: {use_regime: 1}
+  params: {use_regime: 0}
 
 capital:
   starting_usd: 100.0
@@ -15,8 +18,8 @@ capital:
   max_exposure_frac: 0.5
 
 exits:
-  # pure timed hold as tested: stop/trail wide, no TP; liq_rug exit stays
-  stop_frac: 0.90
+  # validated pick: timed 60-min hold, 35% disaster stop, no trail/TP
+  stop_frac: 0.35
   trail_frac: 0.90
   tp_levels: []
   max_hold_minutes: 60

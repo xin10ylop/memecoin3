@@ -20,3 +20,4 @@ dist/
 research/results/*.csv
 data/*.db-shm
 data/*.db-wal
+research/results/validation_run.log

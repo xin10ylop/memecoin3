@@ -1119,3 +1119,10 @@
 {"ts": 1787932511.566172, "phase": "defaults", "label": "dip_reclaim", "n_trades": 34, "expectancy_ret": 0.14059006803383714, "total_pnl_usd": 129.91023077074826}
 {"ts": 1787932513.6421955, "phase": "defaults", "label": "attention_cont", "n_trades": 8, "expectancy_ret": 0.31248631291666923, "total_pnl_usd": 62.49726258333384}
 {"ts": 1787932514.0306976, "phase": "defaults", "label": "trending_follow", "n_trades": 62, "expectancy_ret": 0.14494502258081024, "total_pnl_usd": 224.66478500025593}
+{"ts": 1787932516.3755069, "phase": "defaults", "label": "regime_gated", "n_trades": 143, "expectancy_ret": 0.16799106066371833, "total_pnl_usd": 600.5680418727932}
+{"ts": 1787932516.5162816, "phase": "defaults", "label": "boost_follow", "n_trades": 12, "expectancy_ret": -0.012865358363453224, "total_pnl_usd": -3.8596075090359676}
+{"ts": 1787932520.481556, "phase": "defaults", "label": "composite_v2", "n_trades": 42, "expectancy_ret": 0.3189971742666238, "total_pnl_usd": 334.9470329799549}
+{"ts": 1787932521.8370864, "phase": "defaults", "label": "knife_catch", "n_trades": 140, "expectancy_ret": 0.6250284907894603, "total_pnl_usd": 2187.5997177631107}
+{"ts": 1787932523.098789, "phase": "defaults", "label": "placebo_seed0", "n_trades": 37, "expectancy_ret": 0.31289623440997283, "total_pnl_usd": 289.42901682922485}
+{"ts": 1787932524.352811, "phase": "defaults", "label": "placebo_seed1", "n_trades": 34, "expectancy_ret": 0.3061254162997155, "total_pnl_usd": 260.20660385475827}
+{"ts": 1787932525.6143777, "phase": "defaults", "label": "placebo_seed2", "n_trades": 27, "expectancy_ret": 0.24013601551634348, "total_pnl_usd": 162.09181047353187}

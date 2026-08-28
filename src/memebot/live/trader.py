@@ -39,10 +39,25 @@ from .state import StateStore
 
 log = logging.getLogger(__name__)
 
-WATCHLIST_MAX = 8
+WATCHLIST_MAX = 12
 # cover the default strategies' full lookback (age windows up to 12h) in one
 # OHLCV call so live features match backtest features for young pools
 BARS_PER_FETCH = 720
+
+
+def _knife_watch_score(s: PoolStats) -> float:
+    """Rank candidates by proximity to a knife setup: pumped hard recently
+    AND currently dropping. Uses GT price-change stats (percent)."""
+    pc = s.raw.get("price_change_percentage") or {}
+    try:
+        h6 = float(pc.get("h6") or 0)
+        h24 = float(pc.get("h24") or 0)
+        m30 = float(pc.get("m30") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if max(h6, h24) < 80:          # needs a meaningful prior pump
+        return 0.0
+    return max(0.0, -m30)          # deeper current drop -> higher priority
 
 
 class LiveTrader:
@@ -209,11 +224,17 @@ class LiveTrader:
             for d in (cohort, gate):
                 for k in [k for k in d if k < now_ts - 86400]:
                     del d[k]
-        # candidate watchlist: market-shape pass, ranked by 1h volume
+        # candidate watchlist: market-shape pass. Ranking is strategy-aware:
+        # knife_catch needs pumped-and-dipping pools, which a raw volume
+        # ranking systematically misses; others rank by 1h volume.
         cands = [s for s in stats.values()
                  if s.address not in self.positions
                  and self.safety.check_market(s).ok]
-        cands.sort(key=lambda s: s.vol_h1 or 0, reverse=True)
+        if self.strategy.name == "knife_catch":
+            cands.sort(key=lambda s: (_knife_watch_score(s), s.vol_h1 or 0),
+                       reverse=True)
+        else:
+            cands.sort(key=lambda s: s.vol_h1 or 0, reverse=True)
         self.watchlist = [s.address for s in cands[:WATCHLIST_MAX]]
 
         px = self.jup.prices_usd([SOL_MINT])
@@ -238,8 +259,11 @@ class LiveTrader:
         fake_pool_data = _PoolShim(st, df)
         feat = self.strategy.prepare(fake_pool_data)
         sig = self.strategy.entries(fake_pool_data, feat)
-        # act only if one of the last 2 CLOSED bars signalled (fresh signal)
-        if len(sig) < 3 or not (sig[-3:-1].any()):
+        # act only on FRESH signals from closed bars. knife_catch signals are
+        # discrete crossing events polled at ~2min cadence, so it gets a
+        # slightly wider window (still inside the tested 60m hold horizon).
+        look = 4 if self.strategy.name == "knife_catch" else 2
+        if len(sig) < look + 1 or not (sig[-(look + 1):-1].any()):
             return
         ok, why = self.risk.can_enter(now, self.positions, self.equity(),
                                       st.reserve_usd)

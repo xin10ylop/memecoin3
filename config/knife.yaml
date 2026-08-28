@@ -26,7 +26,14 @@ exits:
   liquidity_drop_exit_frac: 0.5
 
 safety:
+  # match the VALIDATED population: the backtest family used only the
+  # liquidity floor — the general fdv/vol floors would silently exclude
+  # many legitimate knife events on small fresh graduates. On-chain
+  # safety checks (authorities, concentration, sellability) stay fully on.
   min_liquidity_usd: 10000   # exactly the tested floor
+  fdv_min_usd: 20000
+  min_vol_h1_usd: 2000
+  min_age_minutes: 15
 
 live:
   gt_rate_per_min: 6

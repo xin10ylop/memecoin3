@@ -386,9 +386,9 @@ def backfill_ohlcv(gt: GTClient, db: sqlite3.Connection, budget_calls: int,
            OR (p.dex_id != 'pump-fun'
                AND (SELECT MAX(reserve_usd) FROM snapshots
                     WHERE pool_address = p.pool_address) >= 2000)
-        ORDER BY (SELECT MAX(reserve_usd) FROM snapshots
-                  WHERE pool_address = p.pool_address) DESC,
-                 COALESCE(s.last_fetch_at, 0) ASC
+        ORDER BY COALESCE(s.last_fetch_at, 0) ASC,
+                 (SELECT MAX(reserve_usd) FROM snapshots
+                  WHERE pool_address = p.pool_address) DESC
         LIMIT 200
         """,
         (min_reserve,),

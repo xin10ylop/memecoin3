@@ -1,3 +1,4 @@
+panel pools loaded: 33
 # Panel base rates
 
 pools: 33  (indexed by GT with >= $2k max reserve, >=30 bars)

@@ -126,17 +126,55 @@ def verdict(pooled: dict | None, placebo_hi: float,
     return (not reasons), reasons
 
 
+def _snapshot_windows(db_path: str, gap_min: int = 30) -> str:
+    """Human-readable list of contiguous snapshot-coverage windows."""
+    import sqlite3
+    from datetime import datetime, timezone
+    db = sqlite3.connect(db_path)
+    try:
+        ts = [r[0] for r in db.execute(
+            "SELECT DISTINCT ts FROM snapshots ORDER BY ts")]
+    finally:
+        db.close()
+    if not ts:
+        return "none"
+    def fmt(t):
+        return datetime.fromtimestamp(t, timezone.utc).strftime("%m-%d %H:%M")
+    windows = []
+    start = prev = ts[0]
+    for t in ts[1:]:
+        if t - prev > gap_min * 60:
+            windows.append(f"{fmt(start)}..{fmt(prev)}")
+            start = t
+        prev = t
+    windows.append(f"{fmt(start)}..{fmt(prev)}")
+    return "; ".join(windows)
+
+
 def main() -> int:
-    pools = load_panel(DB, min_max_reserve=2000.0, min_bars=45)
+    # min_bars stays at the survivorship-safe floor: bar count is a lifetime
+    # outcome and must not condition panel membership
+    pools = load_panel(DB, min_max_reserve=2000.0, min_bars=5)
     events = trending_first_seen(DB)
     print(f"panel: {len(pools)} pools; trending events: {len(events)}")
     if len(pools) < 20:
         print("PANEL TOO SMALL for validation — collect longer.")
         return 1
 
+    from datetime import datetime, timezone
+    snap_windows = _snapshot_windows(DB)
     lines = ["# Strategy validation report", "",
-             f"panel: {len(pools)} pools (>= $2k max reserve, >= 45 minute-bars), "
-             f"{len(events)} trending events", ""]
+             f"generated: {datetime.now(timezone.utc).isoformat()}",
+             f"panel: {len(pools)} pools (>= $2k max reserve, >= 5 minute-bars), "
+             f"{len(events)} trending events",
+             f"snapshot-covered collection windows (UTC): {snap_windows}",
+             "",
+             "> Entries are only permitted on bars with fresh snapshot",
+             "> coverage (liquidity/FDV/volume verified), i.e. inside the",
+             "> collection windows above. Verdicts tighten or flip as the",
+             "> collector accumulates more windows — re-run this script to",
+             "> regenerate. NOT VALIDATED on a thin panel means 'not enough",
+             "> evidence yet', never 'edge confirmed'.", ""]
 
     # 2. defaults vs placebo
     d = defaults_pass(pools, events)

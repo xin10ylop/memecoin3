@@ -18,3 +18,5 @@ dist/
 
 # research outputs are committed selectively
 research/results/*.csv
+data/*.db-shm
+data/*.db-wal

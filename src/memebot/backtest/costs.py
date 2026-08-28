@@ -28,11 +28,14 @@ class CostModel:
     mult: float = 1.0                # stress multiplier: report at 1x/2x/3x
 
     def impact_frac(self, trade_usd: float, reserve_usd: float | None) -> float:
-        """Proportional price impact for one side."""
+        """Proportional price impact for one side.
+
+        Uses the buy-side CPAMM form q/Q (avg buy price = p0*(1+q/Q)), which
+        upper-bounds the sell-side form v/(Q+v) — conservative for both."""
         if not reserve_usd or reserve_usd <= 0:
             return 0.10  # unknown liquidity: assume very thin
         q = reserve_usd / 2.0
-        return min(0.50, trade_usd / (q + trade_usd))
+        return min(0.90, trade_usd / q)
 
     def side_frac(self, trade_usd: float, reserve_usd: float | None,
                   stressed: bool = False) -> float:

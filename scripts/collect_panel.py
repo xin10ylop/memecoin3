@@ -364,12 +364,14 @@ def store_bars(db: sqlite3.Connection, addr: str, bars: list) -> tuple[int, int]
 
 
 def backfill_ohlcv(gt: GTClient, db: sqlite3.Connection, budget_calls: int,
-                   min_reserve: float = 2000.0, min_age_min: int = 20) -> int:
+                   min_reserve: float = 8000.0, min_age_min: int = 20) -> int:
     """Spend up to budget_calls fetching minute OHLCV for panel pools.
 
-    Priority: pools never fetched, then most-stale. Pools must have shown at
-    least `min_reserve` USD liquidity in some snapshot (skip dust) and be at
-    least `min_age_min` minutes old.
+    Priority: highest-liquidity pools first (these are the only tradable
+    ones), staleness as tiebreaker. min_reserve is set above the pump.fun
+    bonding-curve virtual-reserve baseline (~$6k shows even for dust), so
+    the budget concentrates on pools with real liquidity. Graduated pools
+    (non pump-fun dex) qualify at any reserve.
     """
     now = int(time.time())
     cur = db.execute(
@@ -379,8 +381,14 @@ def backfill_ohlcv(gt: GTClient, db: sqlite3.Connection, budget_calls: int,
                COALESCE(s.backfill_done, 0), COALESCE(s.earliest_bar_ts, 0)
         FROM pools p
         LEFT JOIN ohlcv_state s ON s.pool_address = p.pool_address
-        WHERE (SELECT MAX(reserve_usd) FROM snapshots WHERE pool_address = p.pool_address) >= ?
-        ORDER BY COALESCE(s.last_fetch_at, 0) ASC
+        WHERE (SELECT MAX(reserve_usd) FROM snapshots
+               WHERE pool_address = p.pool_address) >= ?
+           OR (p.dex_id != 'pump-fun'
+               AND (SELECT MAX(reserve_usd) FROM snapshots
+                    WHERE pool_address = p.pool_address) >= 2000)
+        ORDER BY (SELECT MAX(reserve_usd) FROM snapshots
+                  WHERE pool_address = p.pool_address) DESC,
+                 COALESCE(s.last_fetch_at, 0) ASC
         LIMIT 200
         """,
         (min_reserve,),

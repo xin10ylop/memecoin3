@@ -154,8 +154,12 @@ class LiveTrader:
         for page in (1, 2, 3):
             for s in self.gt.new_pools(page):
                 stats[s.address] = s
+        now_ts = int(time.time())
         for s in self.gt.trending_pools(1):
             stats[s.address] = s
+            # feed first-observed trending timestamps to the strategy so
+            # trending_follow is live-capable, not silently inert
+            self.strategy.events.setdefault(s.address, now_ts)
         # refresh stats for held pools not in the sweep
         for pool in list(self.positions):
             if pool not in stats:
@@ -241,9 +245,6 @@ class LiveTrader:
         er = self.exit_rules
         for pool, pos in list(self.positions.items()):
             px = prices.get(pos.mint)
-            if px is None:
-                continue
-            pos.hwm_price = max(pos.hwm_price, px)
             held_min = (time.time() - pos.entry_ts) / 60.0
             st = self.pool_stats.get(pool)
             reserve = st.reserve_usd if st else None
@@ -258,11 +259,27 @@ class LiveTrader:
                         and r.iloc[-1] / r.iloc[0] - 1 <= -er.liq_drop_exit_frac:
                     liq_rug = True
 
+            if px is None:
+                # Jupiter has stopped quoting the token — often exactly the
+                # rug case. Do NOT strand the position: attempt a stressed
+                # exit at the last known reference price after a grace
+                # period or on liquidity collapse.
+                fallback = (st.price_usd if st and st.price_usd
+                            else pos.entry_price)
+                if liq_rug or held_min >= 10:
+                    self.notify.send(f"⚠️ no price for {pos.symbol}; forcing "
+                                     f"stressed exit")
+                    self._exec_exit(pool, pos, fallback, reserve, 1.0,
+                                    "no_price", True)
+                continue
+
+            pos.hwm_price = max(pos.hwm_price, px)
             eff_stop = max(pos.entry_price * (1 - er.stop_frac),
                            pos.hwm_price * (1 - er.trail_frac))
             reason = None
             frac = 1.0
             stressed = False
+            tp_idx = None
             if liq_rug:
                 reason, stressed = "liq_rug", True
             elif px <= eff_stop:
@@ -275,17 +292,20 @@ class LiveTrader:
                     if k in pos.tp_taken:
                         continue
                     if px >= pos.entry_price * (1 + gain):
-                        reason, frac = "tp", sell_frac
-                        pos.tp_taken.append(k)
+                        reason, frac, tp_idx = "tp", sell_frac, k
                         break
             if reason is None:
                 self.state.save_position(pos)
                 continue
-            self._exec_exit(pool, pos, px, reserve, frac, reason, stressed)
+            ok = self._exec_exit(pool, pos, px, reserve, frac, reason, stressed)
+            # TP level is consumed ONLY once the sell actually filled
+            if ok and tp_idx is not None and pool in self.positions:
+                pos.tp_taken.append(tp_idx)
+                self.state.save_position(pos)
 
     def _exec_exit(self, pool: str, pos: OpenPosition, px: float,
                    reserve: float | None, frac: float, reason: str,
-                   stressed: bool) -> None:
+                   stressed: bool) -> bool:
         qty = pos.tokens * frac
         if self.is_live:
             rep = self.executor.sell(pos.mint, qty, px, reserve,
@@ -294,10 +314,9 @@ class LiveTrader:
             rep = self.executor.sell(pos.mint, qty, px, reserve, stressed)
         if not rep.ok:
             log.warning("sell failed %s (%s): %s", pos.symbol, reason, rep.detail)
-            if reason in ("stop", "trail", "liq_rug"):
-                # critical exit failed -> retry next tick, notify loudly
-                self.notify.send(f"⚠️ SELL FAILED {pos.symbol} ({reason})")
-            return
+            # any failed exit retries next tick; notify loudly
+            self.notify.send(f"⚠️ SELL FAILED {pos.symbol} ({reason})")
+            return False
         self.cash += rep.usd
         cost_basis = pos.size_usd * frac
         pnl = rep.usd - cost_basis
@@ -315,6 +334,7 @@ class LiveTrader:
             self.risk.record_realized(pnl, self.equity())
         self.state.set_kv("cash_usd", str(self.cash))
         self.notify.send(f"EXIT {pos.symbol} {reason} pnl ${pnl:+.2f}")
+        return True
 
     # ------------------------------------------------------------------ loop
 

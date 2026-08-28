@@ -57,11 +57,13 @@ def summarize(result: BacktestResult, label: str = "",
                 "n_candidates": result.n_candidates}
     rets = tdf["ret"].to_numpy()
     pnl = tdf["pnl_usd"].to_numpy()
-    pools = tdf["pool"].to_numpy()
+    # cluster by TOKEN mint (one token can have several pools; their trades
+    # share one fate), falling back to pool address when mint is unknown
+    clusters = (tdf["mint"] if "mint" in tdf.columns else tdf["pool"]).to_numpy()
     wins = pnl[pnl > 0]
     losses = pnl[pnl <= 0]
 
-    boot = _cluster_bootstrap_means(rets, pools, n_boot=n_boot)
+    boot = _cluster_bootstrap_means(rets, clusters, n_boot=n_boot)
     lo, hi = float(np.quantile(boot, 0.025)), float(np.quantile(boot, 0.975))
     p_pos = float((boot > 0).mean())
 
@@ -72,7 +74,7 @@ def summarize(result: BacktestResult, label: str = "",
     return {
         "label": label,
         "n_trades": int(len(tdf)),
-        "n_tokens": int(len(np.unique(pools))),
+        "n_tokens": int(len(np.unique(clusters))),
         "n_candidates": result.n_candidates,
         "n_skipped_risk": result.n_skipped_risk,
         "total_pnl_usd": total,

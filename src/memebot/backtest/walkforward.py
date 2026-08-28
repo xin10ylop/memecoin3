@@ -36,7 +36,10 @@ def _configs(grid: GridSpec):
 
 
 def split_by_launch(pools: list[PoolData], n_folds: int) -> list[list[PoolData]]:
-    keyed = sorted(pools, key=lambda p: p.meta.created_ts or 0)
+    # pools with unknown creation time cannot be placed in a launch-time
+    # fold without leaking; exclude them from walk-forward entirely
+    keyed = sorted((p for p in pools if p.meta.created_ts),
+                   key=lambda p: p.meta.created_ts)
     edges = np.linspace(0, len(keyed), n_folds + 1).astype(int)
     return [keyed[edges[i]:edges[i + 1]] for i in range(n_folds)]
 

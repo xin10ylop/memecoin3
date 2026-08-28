@@ -147,15 +147,15 @@ def test_engine_no_lookahead_and_concurrency_cap():
     assert res.n_candidates == 6
     assert len(res.trades) == 2
     assert res.n_skipped_risk >= 4
-    # entries filled at bar open AFTER the signal bar (index 3)
+    # entries filled entry_lag_bars=2 bars after the signal bar (index 2+2)
     for t in res.trades:
         pool = next(p for p in pools if p.meta.address == t.pool)
-        assert t.entry_ts == pool.df.index[3]
+        assert t.entry_ts == pool.df.index[4]
 
 
 def test_engine_daily_loss_halt():
-    # entry fills at bar 3 open (signal bar 2); bar 4 crashes 50% -> stop.
-    crash = [1.0, 1.0, 1.0, 1.0, 0.5] + [0.5] * 5
+    # entry fills at bar 4 open (signal bar 2, lag 2); bar 5 crashes -> stop.
+    crash = [1.0, 1.0, 1.0, 1.0, 1.0, 0.5] + [0.5] * 5
     pools = [_pool(crash, f"C{i}", created=1_700_000_000 + i * 3600,
                    start_ts=1_700_000_000 + i * 3600) for i in range(20)]
     strat = Strategy(name="test", params={}, exit_rules=RULES,

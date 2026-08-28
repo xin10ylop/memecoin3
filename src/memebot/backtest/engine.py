@@ -33,6 +33,9 @@ class RiskParams:
     daily_loss_limit_frac: float = 0.10
     max_pool_share: float = 0.005
     cooldown_min: int = 60          # per-pool cooldown after an exit
+    # bars between signal close and entry fill. 2 models the live path
+    # (60s scan cadence + GT indexing lag); 1 = idealized next-bar-open.
+    entry_lag_bars: int = 2
 
 
 @dataclass
@@ -47,6 +50,7 @@ class Fill:
 class Trade:
     pool: str
     symbol: str | None
+    mint: str | None
     entry_ts: int
     exit_ts: int
     entry_price: float
@@ -68,7 +72,8 @@ class BacktestResult:
 
     def trades_df(self) -> pd.DataFrame:
         return pd.DataFrame([{
-            "pool": t.pool, "symbol": t.symbol, "entry_ts": t.entry_ts,
+            "pool": t.pool, "symbol": t.symbol,
+            "mint": t.mint or t.pool, "entry_ts": t.entry_ts,
             "exit_ts": t.exit_ts, "hold_min": (t.exit_ts - t.entry_ts) / 60,
             "size_usd": t.size_usd, "pnl_usd": t.pnl_usd, "ret": t.ret_frac,
             "reason": t.exit_reason,
@@ -77,7 +82,8 @@ class BacktestResult:
 
 def simulate_position(df: pd.DataFrame, fill_idx: int, size_usd: float,
                       exit_rules: ExitRules, costs: CostModel,
-                      pool: str, symbol: str | None) -> Trade | None:
+                      pool: str, symbol: str | None,
+                      mint: str | None = None) -> Trade | None:
     """Walk one position from its fill bar to exit. Deterministic, no lookahead."""
     n = len(df)
     if fill_idx >= n:
@@ -91,10 +97,12 @@ def simulate_position(df: pd.DataFrame, fill_idx: int, size_usd: float,
                if "reserve_usd" in df.columns else np.full(n, np.nan))
     res_chg = (df["reserve_chg_5m"].to_numpy(dtype=float)
                if "reserve_chg_5m" in df.columns else np.full(n, np.nan))
-    # executable depth: forward-filled reserve, then trailing 5-bar MIN —
-    # spoofed/just-pulled liquidity must not flatter fills
-    exec_liq = (pd.Series(reserve).ffill().rolling(5, min_periods=1).min()
-                .to_numpy(dtype=float))
+    # executable depth: forward-filled reserve (bounded staleness — beyond
+    # ~30 min without a fresh snapshot, liquidity is UNKNOWN and the cost
+    # model's punitive unknown-liquidity impact applies), then trailing
+    # 5-bar MIN so spoofed/just-pulled liquidity can't flatter fills
+    exec_liq = (pd.Series(reserve).ffill(limit=30)
+                .rolling(5, min_periods=1).min().to_numpy(dtype=float))
 
     liq0 = liquidity_at(df, fill_idx)
     entry_price = costs.buy_fill(o[fill_idx], size_usd, liq0)
@@ -167,11 +175,14 @@ def simulate_position(df: pd.DataFrame, fill_idx: int, size_usd: float,
         dead = (lastliq is not None and lastliq < 1000)
         sell(last, remaining, cl[last], "data_end", stressed=dead)
         exit_reason = exit_reason or "data_end"
+    elif exit_reason is None:
+        exit_reason = "tp_full"     # TP ladder liquidated 100%
 
     exit_ts = int(fills[-1].ts)
     flat_fees = costs.flat_fee_usd * n_tx
     pnl = proceeds - size_usd - flat_fees
-    return Trade(pool=pool, symbol=symbol, entry_ts=int(ts[fill_idx]),
+    return Trade(pool=pool, symbol=symbol, mint=mint,
+                 entry_ts=int(ts[fill_idx]),
                  exit_ts=exit_ts, entry_price=entry_price, size_usd=size_usd,
                  pnl_usd=pnl, ret_frac=pnl / size_usd, exit_reason=exit_reason,
                  n_tx=n_tx, fills=fills)
@@ -193,7 +204,7 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
         # never tradeable
         seen_ts = (pool.meta.first_seen_ts or 0) + 120
         for i in idxs:
-            fill_idx = int(i) + 1
+            fill_idx = int(i) + max(1, risk.entry_lag_bars)
             if fill_idx >= len(df):
                 continue
             fill_ts = int(ts[fill_idx])
@@ -208,9 +219,13 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
     realized: list[tuple[int, float]] = []       # (exit_ts, pnl)
     trades: list[Trade] = []
     n_skipped = 0
+    halted_days: set[int] = set()                # daily halt LATCHES (live parity)
+
+    def day_of(ts_: int) -> int:
+        return ts_ - ts_ % 86400
 
     def realized_today(now_ts: int) -> float:
-        day = now_ts - now_ts % 86400
+        day = day_of(now_ts)
         return sum(p for (t, p) in realized if day <= t <= now_ts)
 
     for fill_ts, pool, df, fill_idx in candidates:
@@ -223,7 +238,11 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
         if len(open_until) >= risk.max_concurrent:
             n_skipped += 1
             continue
+        if day_of(fill_ts) in halted_days:
+            n_skipped += 1
+            continue
         if realized_today(fill_ts) <= -risk.daily_loss_limit_frac * risk.starting_usd:
+            halted_days.add(day_of(fill_ts))
             n_skipped += 1
             continue
         liq = liquidity_at(df, fill_idx)
@@ -234,7 +253,8 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
                 n_skipped += 1
                 continue
         trade = simulate_position(df, fill_idx, size, strategy.exit_rules, costs,
-                                  addr, pool.meta.symbol)
+                                  addr, pool.meta.symbol,
+                                  mint=getattr(pool.meta, "base_mint", None))
         if trade is None:
             continue
         trades.append(trade)
@@ -244,9 +264,11 @@ def run_backtest(pools: list[PoolData], strategy: Strategy, costs: CostModel,
         realized.sort()
 
     trades.sort(key=lambda t: t.exit_ts)
-    eq = risk.starting_usd + np.cumsum([t.pnl_usd for t in trades]) \
+    # prepend starting equity so drawdown from inception is measured
+    eq = np.concatenate([[risk.starting_usd],
+                         risk.starting_usd + np.cumsum([t.pnl_usd for t in trades])]) \
         if trades else np.array([risk.starting_usd])
-    idx = [t.exit_ts for t in trades] if trades else [0]
+    idx = ([trades[0].entry_ts] + [t.exit_ts for t in trades]) if trades else [0]
     equity = pd.Series(eq, index=idx, dtype=float)
     return BacktestResult(trades=trades, equity=equity,
                           n_candidates=len(candidates), n_skipped_risk=n_skipped,

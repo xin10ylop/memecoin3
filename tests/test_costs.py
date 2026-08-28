@@ -18,8 +18,8 @@ def test_impact_grows_with_size_and_shrinks_with_liquidity():
 def test_impact_formula_cpamm():
     cm = CostModel()
     # q=100 into quote side Q=25_000 (reserve 50k both sides)
-    # impact = q/(Q+q) = 100/25100
-    assert cm.impact_frac(100, 50_000) == pytest.approx(100 / 25_100)
+    # buy-side impact = q/Q = 100/25000 (upper-bounds the sell-side form)
+    assert cm.impact_frac(100, 50_000) == pytest.approx(100 / 25_000)
 
 
 def test_unknown_liquidity_penalized():

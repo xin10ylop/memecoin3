@@ -20,6 +20,7 @@ columns produced by features.add_features (no forward information).
 """
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -59,6 +60,14 @@ class Strategy:
 # ---------------------------------------------------------------------------
 # helpers
 
+# universe constants mirroring the LIVE safety gate's market-shape checks
+# (config safety.*), applied in backtests too so the backtested universe is
+# the live-tradable one. Pre-registered, not tuned.
+UNIVERSE_FDV_MIN = 100_000
+UNIVERSE_FDV_MAX = 30_000_000
+UNIVERSE_VOL_H1_MIN = 10_000
+
+
 def _col(df: pd.DataFrame, name: str) -> pd.Series:
     if name in df.columns:
         return df[name].astype(float)
@@ -70,6 +79,14 @@ def _liq_ok(df: pd.DataFrame, min_liq: float) -> pd.Series:
     # liquidity unknown (no snapshot coverage) counts as NOT ok — we only
     # trade pools we can size against.
     return r.ge(min_liq).fillna(False)
+
+
+def _universe_ok(df: pd.DataFrame) -> pd.Series:
+    """Live-parity market gate: FDV band + 1h volume floor (NaN fails)."""
+    fdv = _col(df, "fdv_usd")
+    vol = _col(df, "vol_h1_snap")
+    return (fdv.between(UNIVERSE_FDV_MIN, UNIVERSE_FDV_MAX).fillna(False)
+            & vol.ge(UNIVERSE_VOL_H1_MIN).fillna(False))
 
 
 def _buyer_ok(df: pd.DataFrame, min_frac: float) -> pd.Series:
@@ -89,6 +106,7 @@ def _grad_momentum(df: pd.DataFrame, p: dict) -> np.ndarray:
         (df["age_min"] >= p["min_age_min"])
         & (df["age_min"] <= p["max_age_min"])
         & _liq_ok(df, p["min_liq"])
+        & _universe_ok(df)
         & (df["vol_5m"] >= p["min_vol5"])
         & (c > prior_high)
         & (df["ret_5m"] > 0)
@@ -102,6 +120,11 @@ def _grad_momentum(df: pd.DataFrame, p: dict) -> np.ndarray:
 
 def _dip_reclaim(df: pd.DataFrame, p: dict) -> np.ndarray:
     c = df["c"].astype(float)
+    # the "pumped from launch" baseline is only meaningful when stored data
+    # actually starts at pool creation; mid-life data starts never signal
+    age0 = df["age_min"].iloc[0] if len(df) else np.nan
+    if not np.isfinite(age0) or age0 > 15:
+        return np.zeros(len(df), dtype=bool)
     first = c.iloc[0] if len(c) else np.nan
     pumped = df["hwm"] / first >= (1.0 + p["min_run"])
     dipped_now_or_before = (df["dd_from_high"] <= -p["min_dip"]).cummax()
@@ -114,6 +137,7 @@ def _dip_reclaim(df: pd.DataFrame, p: dict) -> np.ndarray:
         & reclaim
         & (df["age_min"] <= p["max_age_min"])
         & _liq_ok(df, p["min_liq"])
+        & _universe_ok(df)
         & liq_stable
         & (df["ret_5m"] > -0.05)
     )
@@ -130,6 +154,7 @@ def _attention_cont(df: pd.DataFrame, p: dict) -> np.ndarray:
         (df["age_min"] >= p["min_age_min"])
         & (df["age_min"] <= p["max_age_min"])
         & _liq_ok(df, p["min_liq"])
+        & _universe_ok(df)
         & fdv.between(p["fdv_min"], p["fdv_max"])
         & (c > df["roll_high_60"].shift(1))
         & rising_lows
@@ -155,8 +180,8 @@ def _trending_follow(df: pd.DataFrame, p: dict) -> np.ndarray:
     age = df["age_min"].iloc[idx]
     if age is not None and not np.isnan(age) and age > p["max_age_min"]:
         return sig
-    liq = _liq_ok(df, p["min_liq"])
-    # first bar at/after the trending event where liquidity qualifies
+    liq = _liq_ok(df, p["min_liq"]) & _universe_ok(df)
+    # first bar at/after the trending event where the pool qualifies
     for j in range(idx, min(idx + 30, n)):
         if liq.iloc[j]:
             sig[j] = True
@@ -171,10 +196,13 @@ def _trending_follow(df: pd.DataFrame, p: dict) -> np.ndarray:
 
 def _random_entries(df: pd.DataFrame, p: dict) -> np.ndarray:
     pool: PoolData = p["_pool"]
-    seed = (hash(pool.meta.address) ^ p.get("seed", 0)) & 0x7FFFFFFF
+    # stable digest: Python's built-in hash() is salted per process, which
+    # would make the negative control irreproducible
+    seed = (zlib.crc32(pool.meta.address.encode()) ^ p.get("seed", 0)) & 0x7FFFFFFF
     rng = np.random.default_rng(seed)
     eligible = (
         _liq_ok(df, p["min_liq"])
+        & _universe_ok(df)
         & (df["age_min"] >= p["min_age_min"])
         & (df["age_min"] <= p["max_age_min"])
     ).fillna(False).to_numpy()

@@ -19,7 +19,9 @@ def add_features(df: pd.DataFrame, created_ts: int | None = None) -> pd.DataFram
     if created_ts:
         out["age_min"] = (ts - created_ts) / 60.0
     else:
-        out["age_min"] = (ts - ts[0]) / 60.0 if len(ts) else np.nan
+        # unknown creation time: age gates must FAIL, not treat an old pool
+        # as newborn (data may start mid-life)
+        out["age_min"] = np.nan
 
     out["ret_1m"] = c.pct_change(1)
     out["ret_5m"] = c.pct_change(5)
@@ -49,7 +51,11 @@ def add_features(df: pd.DataFrame, created_ts: int | None = None) -> pd.DataFram
     if "buys_m5" in out.columns:
         b = out["buys_m5"].astype(float)
         s = out["sells_m5"].astype(float)
-        out["buy_frac"] = b / (b + s).replace(0.0, np.nan)
+        denom = b + s
+        # 0 buys + 0 sells is DEAD flow and must fail a buyer-dominance
+        # gate (0.0), while genuinely missing data stays NaN (neutral)
+        out["buy_frac"] = np.where(denom > 0, b / denom,
+                                   np.where(denom == 0, 0.0, np.nan))
         out["buyers_per_min"] = out["buyers_m5"].astype(float) / 5.0
     if "reserve_usd" in out.columns:
         r = out["reserve_usd"].astype(float)

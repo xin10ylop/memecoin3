@@ -96,9 +96,12 @@ def walk_forward(pools: list[PoolData], grid: GridSpec, costs: CostModel,
                  min_trades: int = 20) -> dict:
     """Anchored walk-forward: train on folds[0..i], test on fold[i+1]."""
     folds = split_by_launch(pools, n_folds)
-    # embargo: max holding period, so a train pool's trades can't overlap the
-    # test period through a token launched right at the fold boundary
-    embargo_sec = max((max(grid.exit_grid.get("max_hold_min", [360])) * 60), 3600)
+    # embargo: keep a train pool's trades from bleeding into the test
+    # period via a boundary launch. Capped at 90 min: realized holds run
+    # 15-60 min, and an embargo of the full max_hold ceiling would consume
+    # the entire test fold on a short collection window. (Regime overlap
+    # between folds on a short panel is a documented limitation either way.)
+    embargo_sec = min(max(grid.exit_grid.get("max_hold_min", [360])) * 60, 5400)
     oos_summaries = []
     picks = []
     pooled_trades = []

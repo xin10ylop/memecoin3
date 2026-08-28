@@ -60,6 +60,83 @@ def _pool_metas(db: sqlite3.Connection, min_max_reserve: float) -> list[PoolMeta
 MAX_GRID_ROWS = 10_000  # cap reindexed frames (~1 week of minutes)
 
 
+def sanitize_bars(bars: pd.DataFrame, max_dev: float = 50.0) -> pd.DataFrame:
+    """Drop indexer-glitch bars: isolated prints 50x+ away from the local
+    price median (GeckoTerminal occasionally emits denomination/decimals
+    glitches — e.g. a $0.00005 token printing a $1,500 bar that reverts a
+    minute later). Real pumps are path-connected through intermediate
+    prices, so a centered 5-bar median is never 50x away from a genuine
+    move. This is DATA CLEANING of physically impossible AMM prices, run
+    identically in backtest and live loading.
+
+    Bars whose close deviates >max_dev from the local median are removed
+    entirely (they become no-trade minutes); surviving bars get h/l clamped
+    into the plausible band.
+    """
+    if bars.empty:
+        return bars
+    c = bars["c"].astype(float)
+    med = c.rolling(5, center=True, min_periods=1).median()
+    bad = (c > med * max_dev) | (c < med / max_dev) | ~np.isfinite(c) | (c <= 0)
+    out = bars.loc[~bad].copy()
+    if out.empty:
+        return out
+    med_ok = out["c"].rolling(5, center=True, min_periods=1).median()
+    out["h"] = np.minimum(out["h"].astype(float), med_ok * max_dev)
+    out["l"] = np.maximum(out["l"].astype(float), med_ok / max_dev)
+    return out
+
+
+def _repair_rebased_segments(merged: pd.DataFrame,
+                             jump: float = 30.0,
+                             snap_band: float = 10.0) -> pd.DataFrame:
+    """Neutralize permanently re-based price segments.
+
+    GT's OHLCV stream occasionally re-bases a pool's price denomination
+    (e.g. a lasting 38,000x step). A >`jump`x move between ADJACENT traded
+    minutes is physically implausible in a CPAMM (it needs several times
+    the pool's entire reserve as one-minute inflow), so such jumps split
+    the series into segments. A segment is kept iff (a) any overlapping
+    snapshot price (independent GT endpoint) agrees within `snap_band`x,
+    or (b) it has no snapshot coverage but is < `jump`x displaced from the
+    last kept segment. Dropped segments become resting-price no-trade
+    minutes at the last trusted close.
+    """
+    c = merged["c"].astype(float)
+    lr = np.abs(np.log10(c / c.shift(1)))
+    seg_id = (lr > np.log10(jump)).fillna(False).cumsum()
+    if seg_id.iloc[-1] == 0:
+        return merged
+    ps = merged["price_snap"].astype(float)
+    keep = pd.Series(False, index=merged.index)
+    last_kept_close: float | None = None
+    for sid in range(int(seg_id.iloc[-1]) + 1):
+        m = seg_id == sid
+        seg_c = c[m]
+        seg_ps = ps[m].dropna()
+        if len(seg_ps):
+            ratio = (seg_c[seg_ps.index] / seg_ps).abs()
+            ok = bool(((ratio < snap_band) & (ratio > 1 / snap_band)).median())
+        elif last_kept_close is None:
+            ok = True                      # nothing to compare against yet
+        else:
+            disp = seg_c.iloc[0] / last_kept_close
+            ok = 1 / jump < disp < jump
+        keep[m] = ok
+        if ok:
+            last_kept_close = float(seg_c.iloc[-1])
+    if keep.all():
+        return merged
+    out = merged.copy()
+    for col in ("o", "h", "l", "c"):
+        out.loc[~keep, col] = np.nan
+    out.loc[~keep, "vol_usd"] = 0.0
+    prev = out["c"].ffill()
+    for col in ("o", "h", "l", "c"):
+        out[col] = out[col].fillna(prev)
+    return out[out["c"].notna()]
+
+
 def _load_pool_df(db: sqlite3.Connection, addr: str,
                   created_ts: int | None = None) -> pd.DataFrame:
     bars = pd.read_sql_query(
@@ -68,6 +145,9 @@ def _load_pool_df(db: sqlite3.Connection, addr: str,
     if bars.empty:
         return bars
     bars = bars.drop_duplicates("ts").set_index("ts")
+    bars = sanitize_bars(bars)
+    if bars.empty:
+        return bars
 
     # Pool-initialization artifacts: the first minutes routinely print wicks
     # thousands of x below the bar body (liquidity being seeded from ~zero).
@@ -100,8 +180,8 @@ def _load_pool_df(db: sqlite3.Connection, addr: str,
         bars["vol_usd"] = bars["vol_usd"].fillna(0.0)
 
     snaps = pd.read_sql_query(
-        """SELECT ts, reserve_usd, fdv_usd, buys_m5, sells_m5, buyers_m5,
-                  sellers_m5, vol_h1 AS vol_h1_snap
+        """SELECT ts, price_usd AS price_snap, reserve_usd, fdv_usd, buys_m5,
+                  sells_m5, buyers_m5, sellers_m5, vol_h1 AS vol_h1_snap
            FROM snapshots WHERE pool_address=? ORDER BY ts""",
         db, params=(addr,))
     if not snaps.empty:
@@ -114,6 +194,8 @@ def _load_pool_df(db: sqlite3.Connection, addr: str,
             snaps.reset_index().sort_values("ts"),
             on="ts", direction="backward", tolerance=600,
         ).set_index("ts")
+        merged = _repair_rebased_segments(merged)
+        merged = merged.drop(columns=["price_snap"])
     else:
         merged = bars.copy()
         for col in PoolData.SNAP_COLS:
@@ -126,7 +208,8 @@ def load_panel(db_path: str, min_max_reserve: float = 2000.0,
     """min_bars is deliberately tiny: bar count is a LIFETIME OUTCOME, and
     excluding short-lived pools would drop exactly the fast rugs a strategy
     could have entered — survivorship bias in its purest form."""
-    db = sqlite3.connect(db_path)
+    db = sqlite3.connect(db_path, timeout=60)
+    db.execute("PRAGMA busy_timeout=60000")
     try:
         pools = []
         for meta in _pool_metas(db, min_max_reserve):
@@ -143,7 +226,8 @@ def load_panel(db_path: str, min_max_reserve: float = 2000.0,
 
 def trending_first_seen(db_path: str) -> dict[str, int]:
     """pool_address -> first ts it appeared in GT trending."""
-    db = sqlite3.connect(db_path)
+    db = sqlite3.connect(db_path, timeout=60)
+    db.execute("PRAGMA busy_timeout=60000")
     try:
         rows = db.execute(
             "SELECT pool_address, MIN(ts) FROM trending GROUP BY pool_address"
@@ -151,6 +235,40 @@ def trending_first_seen(db_path: str) -> dict[str, int]:
         return {r[0]: int(r[1]) for r in rows}
     finally:
         db.close()
+
+
+def boost_first_seen(db_path: str) -> dict[str, int]:
+    """pool_address -> first DexScreener paid-boost payment ts for its token."""
+    db = sqlite3.connect(db_path, timeout=60)
+    db.execute("PRAGMA busy_timeout=60000")
+    try:
+        rows = db.execute(
+            """SELECT p.pool_address, MIN(b.payment_ts)
+               FROM boosts b JOIN pools p
+                 ON p.base_token_address = b.token_address
+               GROUP BY p.pool_address""").fetchall()
+        return {r[0]: int(r[1]) for r in rows if r[1]}
+    finally:
+        db.close()
+
+
+def cohort_momentum(pools: list["PoolData"], min_liq: float = 15_000,
+                    window_min: int = 30) -> dict[int, float]:
+    """Per-minute MEDIAN trailing `window_min`-return across pools that are
+    liquidity-qualified at that minute. Strictly trailing (causal). This is
+    the 'is the meme tape paying right now' factor."""
+    buckets: dict[int, list[float]] = {}
+    for p in pools:
+        df = p.df
+        if "reserve_usd" not in df.columns:
+            continue
+        c = df["c"].astype(float)
+        r = c.pct_change(window_min)
+        ok = df["reserve_usd"].fillna(0) >= min_liq
+        for ts, ret, qual in zip(df.index, r, ok):
+            if qual and np.isfinite(ret):
+                buckets.setdefault(int(ts), []).append(float(ret))
+    return {ts: float(np.median(v)) for ts, v in buckets.items() if v}
 
 
 def panel_summary(pools: list[PoolData]) -> pd.DataFrame:

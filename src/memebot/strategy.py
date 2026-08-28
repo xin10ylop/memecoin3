@@ -198,6 +198,63 @@ def _trending_follow(df: pd.DataFrame, p: dict) -> np.ndarray:
     return sig
 
 
+# E. regime-gated machinery (pre-registered 2026-08-28 after the window-2
+# placebo result showed the exit machinery harvests tape beta): trade the
+# SAME machinery as the placebo, but only when the meme-cohort's own
+# trailing momentum is positive — timing the factor instead of picking
+# tokens. NOTE: designed after observing window 2, so window-2 results are
+# EXPLORATORY for this family; confirmation requires later windows.
+
+def _regime_gated(df: pd.DataFrame, p: dict) -> np.ndarray:
+    cohort: dict = p.get("cohort") or p["_events"].get("__cohort__") or {}
+    n = len(df)
+    if not cohort or n == 0:
+        return np.zeros(n, dtype=bool)
+    ts = df.index.to_numpy()
+    keys = np.array(sorted(cohort))
+    vals = np.array([cohort[k] for k in keys])
+    idx = np.searchsorted(keys, ts, side="right") - 1
+    mom = np.where(idx >= 0, vals[np.clip(idx, 0, None)], np.nan)
+    stale = np.where(idx >= 0, ts - keys[np.clip(idx, 0, None)], 1e12)
+    mom = np.where(stale <= 600, mom, np.nan)
+    cond = (
+        _liq_ok(df, p["min_liq"])
+        & _universe_ok(df)
+        & (df["age_min"] >= p["min_age_min"])
+        & (df["age_min"] <= p["max_age_min"])
+        & pd.Series(mom, index=df.index).ge(p["min_cohort_mom"])
+        & (df["ret_15m"] > 0)
+    )
+    return cond.fillna(False).to_numpy()
+
+
+# F. boost follow (pre-registered 2026-08-28): entry at a token's first
+# DexScreener paid-boost event — promoter conviction as a timestamped
+# public attention signal.
+
+def _boost_follow(df: pd.DataFrame, p: dict) -> np.ndarray:
+    pool: PoolData = p["_pool"]
+    events: dict = p["_events"]
+    ev_ts = events.get(pool.meta.address)
+    n = len(df)
+    sig = np.zeros(n, dtype=bool)
+    if ev_ts is None or n == 0:
+        return sig
+    ts = df.index.to_numpy()
+    idx = int(np.searchsorted(ts, ev_ts, side="left"))
+    if idx >= n:
+        return sig
+    age = df["age_min"].iloc[idx] if idx < n else np.nan
+    if not np.isfinite(age) or age > p["max_age_min"]:
+        return sig
+    ok = _liq_ok(df, p["min_liq"]) & _universe_ok(df)
+    for j in range(idx, min(idx + 30, n)):
+        if ok.iloc[j]:
+            sig[j] = True
+            break
+    return sig
+
+
 # placebo negative control: random entries through the SAME liquidity gate,
 # exits, and cost machinery. If a "real" strategy doesn't beat this by a
 # clear margin, its edge is the exit/cost machinery or the window, not the
@@ -241,6 +298,13 @@ DEFAULTS: dict[str, dict] = {
         "min_age_min": 15, "max_age_min": 720, "min_liq": 15_000,
         "prob_per_bar": 0.01, "seed": 0,
     },
+    "regime_gated": {
+        "min_age_min": 15, "max_age_min": 2880, "min_liq": 15_000,
+        "min_cohort_mom": 0.02, "cohort": None,
+    },
+    "boost_follow": {
+        "max_age_min": 2880, "min_liq": 15_000,
+    },
 }
 
 ENTRY_FNS = {
@@ -249,6 +313,8 @@ ENTRY_FNS = {
     "attention_cont": _attention_cont,
     "trending_follow": _trending_follow,
     "random_entries": _random_entries,
+    "regime_gated": _regime_gated,
+    "boost_follow": _boost_follow,
 }
 
 

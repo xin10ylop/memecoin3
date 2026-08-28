@@ -63,13 +63,13 @@ def test_gap_reindexing_fills_empty_minutes_with_resting_price(tmp_path):
 
 
 def test_wick_clamp_only_at_creation(tmp_path):
-    # data starting 2h after creation keeps its real wicks
-    bars = [(T0 + 7200 + 60 * i, 1.0, 1.1, 0.0001, 1.0, 100.0)
+    # data starting 2h after creation keeps a real (plausible-band) wick
+    bars = [(T0 + 7200 + 60 * i, 1.0, 1.1, 0.03, 1.0, 100.0)
             for i in range(5)]
     path = make_db(tmp_path, bars)
     db = sqlite3.connect(path)
     df = _load_pool_df(db, "P", created_ts=T0)
-    assert df["l"].iloc[0] == pytest.approx(0.0001)
+    assert df["l"].iloc[0] == pytest.approx(0.03)
     # data starting AT creation clamps the first-bar artifact wick
     df2 = _load_pool_df(db, "P", created_ts=T0 + 7200)
     assert df2["l"].iloc[0] >= 0.5  # clamped to half the body

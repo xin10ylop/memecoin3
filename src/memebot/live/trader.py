@@ -139,6 +139,11 @@ class LiveTrader:
         df = pd.DataFrame(bars, columns=["ts", "o", "h", "l", "c", "vol_usd"])
         # in-progress candle can appear twice; keep the later (more complete)
         df = df.drop_duplicates("ts", keep="last").set_index("ts").sort_index()
+        # identical glitch cleaning as backtest loading (store.sanitize_bars)
+        from ..data.store import sanitize_bars
+        df = sanitize_bars(df)
+        if len(df) < 30:
+            return None
         snaps = self._snap_frame(pool)
         if not snaps.empty:
             df = pd.merge_asof(

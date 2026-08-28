@@ -1,37 +1,14 @@
-panel pools loaded: 33
-# Panel base rates
-
-pools: 33  (indexed by GT with >= $2k max reserve, >=30 bars)
-
-## Unconditional (from first indexed bar)
-- gross fwd 5m: n=33 mean=1.558 p25=0.997 med=1.002 p75=1.017 p95=2.642 frac>1: 60.6%
-- gross fwd 15m: n=33 mean=1.403 p25=0.997 med=1.001 p75=1.014 p95=4.285 frac>1: 60.6%
-- gross fwd 30m: n=33 mean=1.447 p25=0.996 med=1.006 p75=1.128 p95=4.218 frac>1: 63.6%
-- gross fwd 60m: n=33 mean=1.277 p25=0.988 med=1.004 p75=1.035 p95=2.224 frac>1: 57.6%
-- gross fwd 120m: n=33 mean=1.275 p25=0.974 med=1.001 p75=1.024 p95=2.224 frac>1: 54.5%
-- gross fwd 240m: n=33 mean=1.277 p25=0.977 med=1.008 p75=1.046 p95=2.224 frac>1: 60.6%
-- gross fwd 480m: n=33 mean=1.286 p25=0.968 med=1.010 p75=1.131 p95=2.224 frac>1: 54.5%
-- peak multiple: n=33 mean=2.465 p25=1.134 med=1.224 p75=2.152 p95=8.177 frac>1: 97.0%
-- minutes to peak: n=33 mean=1503.273 p25=37.000 med=1683.000 p75=2569.000 p95=3788.000 frac>1: 97.0%
-
-## Conditional on crossing tradable gate ($15k liq & $10k/h vol)
-- gross fwd 5m: n=25 mean=0.932 p25=0.998 med=1.001 p75=1.007 p95=1.023 frac>1: 64.0%
-- gross fwd 15m: n=25 mean=0.941 p25=0.995 med=0.999 p75=1.006 p95=1.103 frac>1: 40.0%
-- gross fwd 30m: n=25 mean=0.953 p25=0.999 med=1.002 p75=1.026 p95=1.269 frac>1: 64.0%
-- gross fwd 60m: n=25 mean=0.945 p25=0.988 med=0.998 p75=1.040 p95=1.300 frac>1: 44.0%
-- gross fwd 120m: n=25 mean=0.951 p25=0.979 med=1.005 p75=1.027 p95=1.399 frac>1: 56.0%
-- gross fwd 240m: n=25 mean=0.937 p25=0.977 med=0.995 p75=1.015 p95=1.404 frac>1: 48.0%
-- gross fwd 480m: n=25 mean=0.941 p25=0.967 med=1.000 p75=1.019 p95=1.425 frac>1: 48.0%
-- peak multiple after gate: n=25 mean=1.115 p25=1.010 med=1.030 p75=1.149 p95=1.487 frac>1: 96.0%
-- minutes to peak after gate: n=25 mean=283.920 p25=25.000 med=127.000 p75=580.000 p95=716.600 frac>1: 96.0%
-- age at gate (min): n=25 mean=2077.960 p25=1440.000 med=1938.000 p75=2724.000 p95=4579.000 frac>1: 100.0%
-
-## By dex (final/first, unconditional)
-- fluxbeam fwd 8h: n=1 mean=8.168 p25=8.168 med=8.168 p75=8.168 p95=8.168 frac>1: 100.0%
-- meteora fwd 8h: n=5 mean=0.979 p25=0.966 med=0.980 p75=0.993 p95=1.009 frac>1: 20.0%
-- orca fwd 8h: n=4 mean=0.996 p25=0.993 med=0.996 p75=0.999 p95=1.007 frac>1: 25.0%
-- pancakeswap-v3-solana fwd 8h: n=1 mean=1.057 p25=1.057 med=1.057 p75=1.057 p95=1.057 frac>1: 100.0%
-- pump-fun fwd 8h: n=5 mean=1.296 p25=0.616 med=1.745 p75=1.832 p95=2.010 frac>1: 60.0%
-- pumpswap fwd 8h: n=10 mean=1.051 p25=0.392 med=1.026 p75=1.435 p95=2.236 frac>1: 50.0%
-- raydium fwd 8h: n=5 mean=1.061 p25=1.046 med=1.073 p75=1.095 p95=1.124 frac>1: 80.0%
-- raydium-clmm fwd 8h: n=2 mean=1.024 p25=1.014 med=1.024 p75=1.034 p95=1.042 frac>1: 100.0%
+Traceback (most recent call last):
+  File "/home/user/memecoin3/research/analyze_panel.py", line 136, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/user/memecoin3/research/analyze_panel.py", line 57, in main
+    pools = load_panel(DB, min_max_reserve=2000.0, min_bars=30)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/memecoin3/src/memebot/data/store.py", line 180, in load_panel
+    for meta in _pool_metas(db, min_max_reserve):
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/memecoin3/src/memebot/data/store.py", line 38, in _pool_metas
+    rows = db.execute(
+           ^^^^^^^^^^^
+sqlite3.OperationalError: database is locked

@@ -36,7 +36,8 @@ from memebot.backtest.engine import RiskParams, run_backtest     # noqa: E402
 from memebot.backtest.metrics import log_registry, summarize, summary_table  # noqa: E402
 from memebot.backtest.walkforward import (                       # noqa: E402
     GridSpec, eval_config, grid_report, walk_forward)
-from memebot.data.store import load_panel, trending_first_seen   # noqa: E402
+from memebot.data.store import (boost_first_seen, cohort_momentum,  # noqa: E402
+                                load_panel, trending_first_seen)
 from memebot.strategy import ExitRules, make_strategy            # noqa: E402
 
 DB = sys.argv[1] if len(sys.argv) > 1 else "data/panel.db"
@@ -66,15 +67,25 @@ GRIDS: dict[str, dict] = {
         "param_grid": {"min_liq": [15000, 30000]},
         "exit_grid": {"trail_frac": [0.25]},
     },
+    # E/F pre-registered 2026-08-28 AFTER observing window 2 — results on
+    # data up to then are EXPLORATORY; confirmation needs later windows.
+    "regime_gated": {
+        "param_grid": {"min_cohort_mom": [0.0, 0.02, 0.05]},
+        "exit_grid": {"trail_frac": [0.2, 0.3]},
+    },
+    "boost_follow": {
+        "param_grid": {"min_liq": [15000]},
+        "exit_grid": {"trail_frac": [0.25]},
+    },
 }
 
 
-def defaults_pass(pools, events) -> list[dict]:
+def defaults_pass(pools, events_by_family) -> list[dict]:
     rows = []
     for name in ("grad_momentum", "dip_reclaim", "attention_cont",
-                 "trending_follow"):
+                 "trending_follow", "regime_gated", "boost_follow"):
         strat = make_strategy(name, {}, ExitRules(**EXIT_DEFAULT),
-                              events=events if name == "trending_follow" else {})
+                              events=events_by_family.get(name, {}))
         res = run_backtest(pools, strat, COSTS, RISK)
         s = summarize(res, label=name)
         log_registry({"phase": "defaults", **{k: s.get(k) for k in
@@ -97,7 +108,7 @@ def cost_stress(pools, name, params, exit_params, events) -> list[dict]:
         costs = CostModel(mult=mult)
         strat = make_strategy(name, params, ExitRules(**{**EXIT_DEFAULT,
                                                          **exit_params}),
-                              events=events if name == "trending_follow" else {})
+                              events=events)
         res = run_backtest(pools, strat, costs, RISK)
         rows.append(summarize(res, label=f"{name}@{mult:.0f}x"))
     return rows
@@ -156,7 +167,15 @@ def main() -> int:
     # outcome and must not condition panel membership
     pools = load_panel(DB, min_max_reserve=2000.0, min_bars=5)
     events = trending_first_seen(DB)
-    print(f"panel: {len(pools)} pools; trending events: {len(events)}")
+    boosts = boost_first_seen(DB)
+    cohort = cohort_momentum(pools)
+    events_by_family = {
+        "trending_follow": events,
+        "boost_follow": boosts,
+        "regime_gated": {"__cohort__": cohort},
+    }
+    print(f"panel: {len(pools)} pools; trending events: {len(events)}; "
+          f"boost events: {len(boosts)}; cohort minutes: {len(cohort)}")
     if len(pools) < 20:
         print("PANEL TOO SMALL for validation — collect longer.")
         return 1
@@ -177,7 +196,7 @@ def main() -> int:
              "> evidence yet', never 'edge confirmed'.", ""]
 
     # 2. defaults vs placebo
-    d = defaults_pass(pools, events)
+    d = defaults_pass(pools, events_by_family)
     ddf = summary_table(d)
     ddf.to_csv(OUT / "defaults_vs_placebo.csv", index=False)
     lines += ["## Defaults vs placebo (1x costs)", "```",
@@ -193,12 +212,23 @@ def main() -> int:
                   if placebo_rows else 0.0)
     lines.append(f"placebo mean expectancy: {placebo_mean:.4f}; "
                  f"upper-CI bar to beat: {placebo_hi:.4f}")
+    strat_best = max((r.get("expectancy_ret") or -9e9 for r in d
+                      if not r["label"].startswith("placebo")
+                      and r.get("n_trades", 0) > 0), default=None)
+    if strat_best is not None and placebo_rows and strat_best <= placebo_mean:
+        lines += ["",
+                  "> **Interpretation:** the RANDOM-ENTRY placebo matches or",
+                  "> beats every strategy's expectancy in this window. The",
+                  "> measured returns are therefore window beta captured by",
+                  "> the shared exit machinery (asymmetric stops/trails on a",
+                  "> hot tape), NOT entry-signal edge. No entry signal has",
+                  "> demonstrated value beyond random timing yet."]
     lines.append("")
 
     # 3-5. per-family grid + walk-forward + stress
     verdicts = {}
     for name, g in GRIDS.items():
-        ev = events if name == "trending_follow" else {}
+        ev = events_by_family.get(name, {})
         grid = GridSpec(strategy=name, param_grid=g["param_grid"],
                         exit_grid=g["exit_grid"], events=ev)
         gr = grid_report(pools, grid, COSTS, RISK)

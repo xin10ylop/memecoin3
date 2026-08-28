@@ -1,0 +1,31 @@
+# Second paper forward test: knife_catch (failure-autopsy inversion).
+# Buy the first -35%-from-high break after a >=2x pump, timed exit.
+# Hot-window evidence only (see research/mining/failure-autopsy.md);
+# use_regime=1 sizes it to zero on cool tape. This paper run IS the
+# clean forward window the autopsy demanded.
+
+strategy:
+  name: knife_catch
+  params: {use_regime: 1}
+
+capital:
+  starting_usd: 100.0
+  risk_per_trade_usd: 25.0
+  max_concurrent: 4
+  max_exposure_frac: 0.5
+
+exits:
+  # pure timed hold as tested: stop/trail wide, no TP; liq_rug exit stays
+  stop_frac: 0.90
+  trail_frac: 0.90
+  tp_levels: []
+  max_hold_minutes: 60
+  liquidity_drop_exit_frac: 0.5
+
+safety:
+  min_liquidity_usd: 10000   # exactly the tested floor
+
+live:
+  gt_rate_per_min: 6
+  state_db: data/live_knife.db
+  kill_file: data/KILL

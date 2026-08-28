@@ -86,6 +86,15 @@ GRIDS: dict[str, dict] = {
                        "max_rv30": [0.08, 99.0]},
         "exit_grid": {"trail_frac": [0.15, 0.2]},
     },
+    # H knife_catch (pre-registered 2026-08-28 from the failure-autopsy
+    # inversion; hot-window evidence only — exploratory until a clean
+    # forward window). Exit grid includes the pure timed hold that was
+    # actually tested (stop/trail effectively off) and a protected variant.
+    "knife_catch": {
+        "param_grid": {"min_dip": [0.30, 0.35, 0.45], "use_regime": [0, 1]},
+        "exit_grid": {"stop_frac": [0.90, 0.35], "trail_frac": [0.90],
+                      "max_hold_min": [60, 120]},
+    },
 }
 
 
@@ -93,7 +102,7 @@ def defaults_pass(pools, events_by_family) -> list[dict]:
     rows = []
     for name in ("grad_momentum", "dip_reclaim", "attention_cont",
                  "trending_follow", "regime_gated", "boost_follow",
-                 "composite_v2"):
+                 "composite_v2", "knife_catch"):
         strat = make_strategy(name, {}, ExitRules(**EXIT_DEFAULT),
                               events=events_by_family.get(name, {}))
         res = run_backtest(pools, strat, COSTS, RISK)
@@ -185,6 +194,7 @@ def main() -> int:
         "boost_follow": boosts,
         "regime_gated": {"__cohort__": cohort},
         "composite_v2": {**events, "__cohort_gate__": gate},
+        "knife_catch": {"__cohort_gate__": gate},
     }
     print(f"panel: {len(pools)} pools; trending events: {len(events)}; "
           f"boost events: {len(boosts)}; cohort minutes: {len(cohort)}")

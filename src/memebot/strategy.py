@@ -324,6 +324,48 @@ def _composite_v2(df: pd.DataFrame, p: dict) -> np.ndarray:
     return cond.fillna(False).to_numpy()
 
 
+# H. knife catch (pre-registered 2026-08-28 from the failure-autopsy
+# inversion, research/mining/failure-autopsy.md): after a >=2x pump from
+# launch, enter AT the first -35%-from-high break — the autopsy's paired
+# test showed waiting for any confirmation (EMA reclaim, low+30) buys the
+# same bounce materially higher. Deliberately does NOT stack the universe
+# gate: round-1 dip_reclaim died of gate-stacking; this family uses only
+# the liquidity floor exactly as tested. Hot-window evidence only so far;
+# the regime gate variant (use_regime=1) sizes it to zero on cool tape.
+
+def _knife_catch(df: pd.DataFrame, p: dict) -> np.ndarray:
+    n = len(df)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    age0 = df["age_min"].iloc[0]
+    if not np.isfinite(age0) or age0 > 15:      # must observe from creation
+        return np.zeros(n, dtype=bool)
+    c = df["c"].astype(float)
+    first = c.iloc[0]
+    pumped = (df["hwm"] / first >= (1.0 + p["min_run"]))
+    dd = df["dd_from_high"].astype(float)
+    cross = (dd <= -p["min_dip"]) & (dd.shift(1) > -p["min_dip"])
+    cond = (
+        pumped
+        & cross
+        & _liq_ok(df, p["min_liq"])
+        & (df["age_min"] <= p["max_age_min"])
+    )
+    if p.get("use_regime"):
+        events: dict = p["_events"]
+        gate: dict = events.get("__cohort_gate__") or {}
+        if not gate:
+            return np.zeros(n, dtype=bool)
+        ts = df.index.to_numpy()
+        keys = np.array(sorted(gate))
+        vals = np.array([gate[k] for k in keys])
+        idx = np.searchsorted(keys, ts, side="right") - 1
+        on = np.where(idx >= 0, vals[np.clip(idx, 0, None)], 0)
+        stale = np.where(idx >= 0, ts - keys[np.clip(idx, 0, None)], 1e12)
+        cond = cond & pd.Series((on == 1) & (stale <= 600), index=df.index)
+    return cond.fillna(False).to_numpy()
+
+
 # placebo negative control: random entries through the SAME liquidity gate,
 # exits, and cost machinery. If a "real" strategy doesn't beat this by a
 # clear margin, its edge is the exit/cost machinery or the window, not the
@@ -379,6 +421,10 @@ DEFAULTS: dict[str, dict] = {
         "max_dd": 0.15, "min_turnover": 0.02, "min_buyers_pm": 1.0,
         "min_buy_frac": 0.55, "max_rv30": 0.08,
     },
+    "knife_catch": {
+        "min_run": 1.0, "min_dip": 0.35, "min_liq": 10_000,
+        "max_age_min": 720, "use_regime": 0,
+    },
 }
 
 ENTRY_FNS = {
@@ -390,6 +436,7 @@ ENTRY_FNS = {
     "regime_gated": _regime_gated,
     "boost_follow": _boost_follow,
     "composite_v2": _composite_v2,
+    "knife_catch": _knife_catch,
 }
 
 

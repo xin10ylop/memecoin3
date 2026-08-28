@@ -230,7 +230,7 @@ def _insert_snapshot_row(db: sqlite3.Connection, ts: int, a: dict) -> None:
 
 
 def snapshot_tracked(gt: GTClient, db: sqlite3.Connection,
-                     min_reserve: float = 2000.0, cap: int = 300) -> int:
+                     min_reserve: float = 2000.0, cap: int = 500) -> int:
     """Keep snapshotting pools that left the newest-200 window but matter
     (ever reached min_reserve liquidity, or ever trended). Uses the
     30-addresses-per-call multi endpoint to stay inside rate budget."""

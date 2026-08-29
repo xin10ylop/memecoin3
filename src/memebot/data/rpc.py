@@ -17,8 +17,12 @@ DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
 
 
 class SolanaRpc:
-    def __init__(self, url: str | None = None, per_min: float = 30.0):
+    def __init__(self, url: str | None = None, per_min: float | None = None):
         self.url = url or os.environ.get("MEMEBOT_RPC_URL") or DEFAULT_RPC
+        if per_min is None:
+            # private RPCs (Helius/QuickNode) tolerate far more than the
+            # shared public endpoint
+            per_min = 30.0 if self.url == DEFAULT_RPC else 120.0
         self.http = HttpClient(per_min=per_min)
         self._id = 0
 

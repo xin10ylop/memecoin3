@@ -95,7 +95,15 @@ class SafetyGate:
                 if frac_incl > 0.75:
                     reasons.append(f"top10 incl largest {frac_incl:.0%} > 75%")
             else:
-                reasons.append("holder list unreadable")
+                # public-RPC throttling makes this read flaky; blocking on it
+                # rejects clean tokens for infra reasons. Paper mode may
+                # continue (flagged) to measure true capture; LIVE mode
+                # always hard-blocks unverified concentration.
+                if self.cfg.get("allow_unverified_holders"):
+                    log.warning("holder list unreadable for %s — proceeding "
+                                "UNVERIFIED (paper-only policy)", mint)
+                else:
+                    reasons.append("holder list unreadable")
         return SafetyVerdict(not reasons, reasons)
 
     # -- 4. sellability via Jupiter ------------------------------------------

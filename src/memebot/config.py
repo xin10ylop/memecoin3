@@ -45,6 +45,9 @@ class Config:
         v = self._d.get(k, default)
         return Config(v) if isinstance(v, dict) else v
 
+    def __contains__(self, k: str) -> bool:
+        return k in self._d
+
     def raw(self) -> dict[str, Any]:
         return copy.deepcopy(self._d)
 

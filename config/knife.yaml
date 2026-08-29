@@ -34,6 +34,10 @@ safety:
   fdv_min_usd: 20000
   min_vol_h1_usd: 2000
   min_age_minutes: 15
+  # PAPER-ONLY: public-RPC throttling makes holder reads flaky and was
+  # blocking every entry for infra reasons. Live mode must never set this
+  # (a Helius RPC key makes the read reliable instead).
+  allow_unverified_holders: true
 
 live:
   gt_rate_per_min: 6

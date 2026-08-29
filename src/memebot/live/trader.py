@@ -92,6 +92,10 @@ class LiveTrader:
         self.is_live = cfg.mode == "live" and live_trading_armed()
         if cfg.mode == "live" and not live_trading_armed():
             log.warning("config mode=live but MEMEBOT_LIVE!=YES -> running PAPER")
+        if self.is_live and cfg.safety.get("allow_unverified_holders"):
+            # paper-only relaxation must never reach live trading
+            cfg.safety._d["allow_unverified_holders"] = False
+            log.warning("allow_unverified_holders is paper-only; forced OFF for live")
         if self.is_live:
             self.executor = JupiterExecutor(
                 self.jup, self.rpc, wallet_min_sol=cfg.live.wallet_min_sol)
@@ -223,7 +227,7 @@ class LiveTrader:
             if peak / first < 1.8:            # needs a meaningful run
                 continue
             dd = last / peak - 1.0
-            if dd > -0.20:                    # not breaking yet
+            if dd > -0.15:                    # not close enough to a break
                 continue
             reserves = [rv for _, _p, rv in pts if rv]
             reserve = reserves[-1] if reserves else None
@@ -314,6 +318,9 @@ class LiveTrader:
         else:
             cands.sort(key=lambda s: s.vol_h1 or 0, reverse=True)
         self.watchlist = [s.address for s in cands[:WATCHLIST_MAX]]
+        log.info("watchlist: %s", [
+            (self.pool_stats[a].symbol if a in self.pool_stats else a[:6])
+            for a in self.watchlist])
 
         px = self.jup.prices_usd([SOL_MINT])
         if px.get(SOL_MINT):
@@ -340,7 +347,7 @@ class LiveTrader:
         # act only on FRESH signals from closed bars. knife_catch signals are
         # discrete crossing events polled at ~2min cadence, so it gets a
         # slightly wider window (still inside the tested 60m hold horizon).
-        look = 4 if self.strategy.name == "knife_catch" else 2
+        look = 6 if self.strategy.name == "knife_catch" else 2
         if len(sig) < look + 1 or not (sig[-(look + 1):-1].any()):
             return
         ok, why = self.risk.can_enter(now, self.positions, self.equity(),

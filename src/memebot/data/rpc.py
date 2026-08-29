@@ -56,6 +56,7 @@ class SolanaRpc:
             "supply": int(info.get("supply") or 0),
             "decimals": int(info.get("decimals") or 0),
             "program": data.get("program"),          # spl-token | spl-token-2022
+            "extensions": info.get("extensions") or [],
         }
 
     def token_largest_accounts(self, mint: str) -> list[dict]:

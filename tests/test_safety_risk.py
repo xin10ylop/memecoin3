@@ -63,6 +63,33 @@ def test_onchain_rejects_active_authorities():
     assert not g.check_onchain("MINT").ok
 
 
+def test_token2022_extension_screening():
+    ok_holders = [{"address": "vault", "amount": 3000, "ui_amount": 3000}] + [
+        {"address": f"w{i}", "amount": 100, "ui_amount": 100} for i in range(10)]
+
+    def rpc_with(exts):
+        r = FakeRpc(largest=ok_holders)
+        r._info["program"] = "spl-token-2022"
+        r._info["extensions"] = exts
+        return r
+
+    # benign metadata-only token-2022 (pump.fun style) passes
+    g = gate(rpc=rpc_with([{"extension": "metadataPointer", "state": {}},
+                           {"extension": "tokenMetadata", "state": {}}]))
+    assert g.check_onchain("MINT").ok
+    # transfer hook rejected
+    g = gate(rpc=rpc_with([{"extension": "transferHook", "state": {}}]))
+    assert not g.check_onchain("MINT").ok
+    # >1% transfer fee rejected
+    g = gate(rpc=rpc_with([{"extension": "transferFeeConfig", "state": {
+        "newerTransferFee": {"transferFeeBasisPoints": 500}}}]))
+    assert not g.check_onchain("MINT").ok
+    # small fee tolerated
+    g = gate(rpc=rpc_with([{"extension": "transferFeeConfig", "state": {
+        "newerTransferFee": {"transferFeeBasisPoints": 50}}}]))
+    assert g.check_onchain("MINT").ok
+
+
 def test_onchain_rejects_concentration_excluding_pool_vault():
     largest = ([{"address": "vault", "amount": 5_000, "ui_amount": 5000}] +
                [{"address": f"w{i}", "amount": 500, "ui_amount": 500}

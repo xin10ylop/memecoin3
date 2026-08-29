@@ -69,10 +69,27 @@ class SafetyGate:
             reasons.append("mint authority not revoked")
         if c.require_revoked_freeze_authority and info["freeze_authority"]:
             reasons.append("freeze authority not revoked")
-        # Token-2022 extensions can implement transfer hooks / confiscatable
-        # balances / 100% transfer fees. Vanilla SPL only.
+        # Token-2022 is now used by major launchpads (pump.fun mints carry
+        # only metadata extensions), so screen EXTENSIONS, not the program:
+        # reject only mechanisms that can tax, block, or confiscate.
         if info.get("program") == "spl-token-2022":
-            reasons.append("token-2022 mint (extension risk)")
+            for ext in info.get("extensions") or []:
+                name = ext.get("extension")
+                state = ext.get("state") or {}
+                if name in ("transferHook", "permanentDelegate",
+                            "pausableConfig"):
+                    reasons.append(f"token-2022 dangerous extension: {name}")
+                elif name == "transferFeeConfig":
+                    fee = max(
+                        ((state.get("newerTransferFee") or {})
+                         .get("transferFeeBasisPoints") or 0),
+                        ((state.get("olderTransferFee") or {})
+                         .get("transferFeeBasisPoints") or 0))
+                    if fee > 100:
+                        reasons.append(f"token-2022 transfer fee {fee}bps")
+                elif name == "defaultAccountState" and \
+                        (state.get("accountState") or "").lower() == "frozen":
+                    reasons.append("token-2022 default-frozen accounts")
         supply = info["supply"]
         if supply <= 0:
             reasons.append("zero supply")

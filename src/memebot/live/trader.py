@@ -180,6 +180,70 @@ class LiveTrader:
 
     # ------------------------------------------------------------------ scan
 
+    def _panel_candidates(self) -> list[PoolStats]:
+        """Pull knife-setup candidates from the collector's panel DB.
+
+        The GT scan only sees the newest-200 pools + trending; a token that
+        pumps hours after launch is invisible to it. The collector snapshots
+        ~500 tracked pools every ~3 min — enough freshness to spot a
+        pumped-and-breaking profile with zero extra API calls."""
+        import sqlite3
+        path = self.cfg.live.get("panel_db", "data/panel.db")
+        try:
+            db = sqlite3.connect(path, timeout=10)
+            db.execute("PRAGMA busy_timeout=10000")
+            now = int(time.time())
+            rows = db.execute(
+                """SELECT s.pool_address, s.ts, s.price_usd, s.reserve_usd,
+                          s.fdv_usd, s.vol_h1, p.base_token_address,
+                          p.base_symbol, p.pool_created_at
+                   FROM snapshots s JOIN pools p
+                     ON p.pool_address = s.pool_address
+                   WHERE s.ts >= ? AND s.price_usd IS NOT NULL""",
+                (now - 12 * 3600,)).fetchall()
+            db.close()
+        except Exception as e:
+            log.debug("panel candidates unavailable: %s", e)
+            return []
+        from collections import defaultdict
+        series = defaultdict(list)
+        meta = {}
+        for r in rows:
+            series[r[0]].append((r[1], r[2], r[3]))   # ts, price, reserve
+            meta[r[0]] = r
+        out = []
+        for addr, pts in series.items():
+            if len(pts) < 5:
+                continue
+            pts.sort()
+            prices = [p for _, p, _r in pts if p and p > 0]
+            if len(prices) < 5:
+                continue
+            first, last, peak = prices[0], prices[-1], max(prices)
+            if peak / first < 1.8:            # needs a meaningful run
+                continue
+            dd = last / peak - 1.0
+            if dd > -0.20:                    # not breaking yet
+                continue
+            reserves = [rv for _, _p, rv in pts if rv]
+            reserve = reserves[-1] if reserves else None
+            if not reserve or reserve < 8000:  # liquidity floor-ish
+                continue
+            if pts[-1][0] < now - 1800:       # series gone stale (>30 min)
+                continue
+            r = meta[addr]
+            from ..data.gt import parse_iso_ts
+            out.append((dd, PoolStats(
+                address=addr, base_mint=r[6], symbol=r[7], name=r[7],
+                dex_id=None, created_ts=parse_iso_ts(r[8]),
+                price_usd=last, reserve_usd=reserve, fdv_usd=r[4],
+                market_cap_usd=r[4], vol_m5=None, vol_h1=r[5],
+                vol_h24=None, buys_m5=None, sells_m5=None, buyers_m5=None,
+                sellers_m5=None, price_change_m5=None, price_change_h1=None,
+                raw={})))
+        out.sort(key=lambda t: t[0])          # deepest break first
+        return [s for _, s in out[:10]]
+
     def scan(self) -> None:
         stats: dict[str, PoolStats] = {}
         for page in (1, 2, 3):
@@ -233,6 +297,20 @@ class LiveTrader:
         if self.strategy.name == "knife_catch":
             cands.sort(key=lambda s: (_knife_watch_score(s), s.vol_h1 or 0),
                        reverse=True)
+            # panel-DB candidates (pumped & breaking, tracked by the
+            # collector) take priority — the GT sweep can't see them
+            panel = [s for s in self._panel_candidates()
+                     if s.address not in self.positions]
+            for s in panel:
+                self._record_snap(s)
+            seen = set()
+            merged = []
+            for s in panel + cands:
+                if s.address in seen:
+                    continue
+                seen.add(s.address)
+                merged.append(s)
+            cands = merged
         else:
             cands.sort(key=lambda s: s.vol_h1 or 0, reverse=True)
         self.watchlist = [s.address for s in cands[:WATCHLIST_MAX]]

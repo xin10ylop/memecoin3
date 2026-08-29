@@ -353,12 +353,30 @@ class LiveTrader:
         fake_pool_data = _PoolShim(st, df)
         feat = self.strategy.prepare(fake_pool_data)
         sig = self.strategy.entries(fake_pool_data, feat)
-        # act only on FRESH signals from closed bars. knife_catch signals are
-        # discrete crossing events polled at ~2min cadence, so it gets a
-        # slightly wider window (still inside the tested 60m hold horizon).
-        look = 6 if self.strategy.name == "knife_catch" else 2
+        # Act only on FRESH signals from closed bars. The backtest fills 2
+        # bars after the signal bar (entry_lag_bars=2); a wider live window
+        # buys a DIFFERENT trade — the autopsy measured that entering ~5 min
+        # late costs ~29pp, and the first live losses were exactly that:
+        # entries into spent dead-cat bounces well above the break level.
+        look = 3 if self.strategy.name == "knife_catch" else 2
         if len(sig) < look + 1 or not (sig[-(look + 1):-1].any()):
             return
+        # Price-fidelity gate: the fill must still be near the signal bar's
+        # price. If the bounce already ran, the trade the backtest measured
+        # no longer exists.
+        sig_idx = int(np.flatnonzero(sig[-(look + 1):-1])[-1]) + len(sig) - look - 1
+        sig_price = float(df["c"].iloc[sig_idx])
+        now_price = st.price_usd or float(df["c"].iloc[-1])
+        if sig_price > 0:
+            drift = now_price / sig_price - 1.0
+            if drift > self.cfg.get("entry_max_drift_up", 0.10):
+                log.info("skip %s: bounce already ran %+.0f%% past signal",
+                         st.symbol, drift * 100)
+                return
+            if drift < -0.35:
+                log.info("skip %s: collapsed %+.0f%% since signal (knife still "
+                         "falling)", st.symbol, drift * 100)
+                return
         ok, why = self.risk.can_enter(now, self.positions, self.equity(),
                                       st.reserve_usd)
         if not ok:

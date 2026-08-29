@@ -304,6 +304,10 @@ class LiveTrader:
                  if s.address not in self.positions
                  and self.safety.check_market(s).ok]
         if self.strategy.name == "knife_catch":
+            # hard age cutoff on BOTH candidate sources: trending keeps
+            # resurfacing yesterday's dippers that can never signal again
+            cands = [s for s in cands
+                     if s.created_ts and now_ts - s.created_ts <= 12 * 3600]
             cands.sort(key=lambda s: (_knife_watch_score(s), s.vol_h1 or 0),
                        reverse=True)
             # panel-DB candidates (pumped & breaking, tracked by the

@@ -237,6 +237,11 @@ class LiveTrader:
                 continue
             r = meta[addr]
             from ..data.gt import parse_iso_ts
+            # knife_catch can never trade pools past its 12h age limit —
+            # older dippers would just clog watchlist slots forever
+            cts = parse_iso_ts(r[8])
+            if not cts or now - cts > 12 * 3600:
+                continue
             out.append((dd, PoolStats(
                 address=addr, base_mint=r[6], symbol=r[7], name=r[7],
                 dex_id=None, created_ts=parse_iso_ts(r[8]),

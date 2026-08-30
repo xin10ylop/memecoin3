@@ -183,6 +183,15 @@ class RealtimeScalper:
         if not px:
             self.candidates.pop(mint, None)
             return
+        # sanity-check the entry against an executable quote: buying at a
+        # phantom price guarantees an instant phantom loss
+        qp = self.quote_price(mint, size / px)
+        if qp and (qp / px > 3 or qp / px < 0.33):
+            log.info("skip %s: entry price unreliable (index %.3e vs quote "
+                     "%.3e)", mint[:10], px, qp)
+            self.candidates.pop(mint, None)
+            return
+        px = qp or px
         v = self.safety.check_sellability(mint, size, self.sol_price)
         if not v.ok:
             log.info("safety reject %s: %s", mint[:10], v.reason)
@@ -215,15 +224,36 @@ class RealtimeScalper:
             p = px.get(mint)
             held = (time.time() - pos.entry_ts) / 60
             if p is None:
-                if held >= 5:
-                    self._exit(pos, pos.entry_price * 0.1, "no_price")
+                # the index feed dropping a token is NOT proof it died —
+                # confirm against an executable quote before writing off 90%
+                qp = self.quote_price(pos.mint, pos.tokens, pos.decimals)
+                if qp:
+                    pos.hwm_price = max(pos.hwm_price, qp)
+                    if qp <= pos.hwm_price * (1 - TRAIL) or held >= MAX_HOLD_MIN:
+                        self._exit(pos, qp, "quote_exit")
+                    else:
+                        self.state.save_position(pos)
+                elif held >= 10:
+                    self._exit(pos, pos.entry_price * 0.1, "no_route")
                 continue
-            pos.hwm_price = max(pos.hwm_price, p)
-            if p <= pos.hwm_price * (1 - TRAIL):
-                self._exit(pos, p, "trail")
-            elif held >= MAX_HOLD_MIN:
-                self._exit(pos, p, "time")
+            # the index price only SCREENS; every exit is confirmed against
+            # an executable quote so one bad index tick cannot dump a position
+            if p <= pos.hwm_price * (1 - TRAIL) or held >= MAX_HOLD_MIN:
+                qp = self.quote_price(pos.mint, pos.tokens, pos.decimals)
+                real = qp if qp else p
+                if qp and p > 0 and (qp / p > 2 or qp / p < 0.5):
+                    log.warning("price disagreement on %s: index %.3e vs "
+                                "quote %.3e - trusting the quote",
+                                pos.symbol, p, qp)
+                pos.hwm_price = max(pos.hwm_price, real)
+                if held >= MAX_HOLD_MIN:
+                    self._exit(pos, real, "time")
+                elif real <= pos.hwm_price * (1 - TRAIL):
+                    self._exit(pos, real, "trail")
+                else:
+                    self.state.save_position(pos)
             else:
+                pos.hwm_price = max(pos.hwm_price, p)
                 self.state.save_position(pos)
 
     def _exit(self, pos: OpenPosition, px: float, reason: str) -> None:
@@ -242,6 +272,25 @@ class RealtimeScalper:
         self.risk.record_realized(pnl, self.equity())
         self.state.set_kv("cash_usd", str(self.cash))
         self.notify.send(f"EXIT {pos.symbol} {reason} pnl ${pnl:+.2f}")
+
+    def quote_price(self, mint: str, tokens: float,
+                    decimals: int = 6) -> float | None:
+        """The price we could ACTUALLY SELL AT, from a Jupiter quote.
+
+        Jupiter's index price is unreliable for tokens minutes old — it can
+        price a different venue than the one holding the liquidity. A live
+        position was marked down 87% and exited on a phantom crash while the
+        real market price sat ABOVE our entry. A quote cannot lie that way:
+        it is what a real sell would return, right now.
+        """
+        raw = int(max(tokens, 0) * 10 ** decimals)
+        if raw <= 0:
+            return None
+        q = self.jup.quote(mint, SOL_MINT, raw, slippage_bps=1000)
+        out = int((q or {}).get("outAmount") or 0)
+        if out <= 0:
+            return None
+        return (out / 1e9 * self.sol_price) / tokens
 
     def equity(self) -> float:
         return self.cash + sum(p.tokens * p.entry_price

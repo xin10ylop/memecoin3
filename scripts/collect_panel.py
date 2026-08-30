@@ -386,9 +386,14 @@ def backfill_ohlcv(gt: GTClient, db: sqlite3.Connection, budget_calls: int,
            OR (p.dex_id != 'pump-fun'
                AND (SELECT MAX(reserve_usd) FROM snapshots
                     WHERE pool_address = p.pool_address) >= 2000)
-        ORDER BY COALESCE(s.last_fetch_at, 0) ASC,
-                 (SELECT MAX(reserve_usd) FROM snapshots
-                  WHERE pool_address = p.pool_address) DESC
+        -- Coverage priority: young, currently-active pools first. Exit
+        -- verifiability needs bars AFTER a trade, and plain round-robin
+        -- over thousands of pools revisits each one only every few hours —
+        -- which made honest trades look unverifiable.
+        ORDER BY (CASE WHEN (SELECT MAX(ts) FROM snapshots
+                             WHERE pool_address = p.pool_address)
+                            >= strftime('%s','now') - 3600 THEN 0 ELSE 1 END),
+                 COALESCE(s.last_fetch_at, 0) ASC
         LIMIT 200
         """,
         (min_reserve,),
@@ -465,7 +470,7 @@ def main() -> int:
             tracked = snapshot_tracked(gt, db)
             # keep the full cycle well under the ~9 min depth of the
             # newest-200 window so no launch is missed between sweeps
-            ohlcv_calls = backfill_ohlcv(gt, db, budget_calls=18)
+            ohlcv_calls = backfill_ohlcv(gt, db, budget_calls=24)
             npools = db.execute("SELECT COUNT(*) FROM pools").fetchone()[0]
             nbars = db.execute("SELECT COUNT(*) FROM ohlcv").fetchone()[0]
             log.info(

@@ -52,7 +52,11 @@ log = logging.getLogger(__name__)
 OBS_SEC = 120          # observation window before deciding
 POLL_SEC = 10          # price sampling cadence (batched across candidates)
 MIN_RANGE = 0.172      # validated threshold: >=17.2% range in the window
-MIN_SAMPLES = 6        # needs real activity, not two lonely prints
+MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
+                       # Jupiter's batch price call intermittently omits
+                       # brand-new mints, so demanding 6 samples was
+                       # rejecting QUALIFYING signals (28.8% range, 27.5%
+                       # range) for our feed's reliability, not the token's
 TRAIL = 0.30
 MAX_HOLD_MIN = 30
 

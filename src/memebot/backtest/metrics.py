@@ -50,11 +50,23 @@ def leave_top_k(pnl: np.ndarray, k: int) -> float:
 
 
 def summarize(result: BacktestResult, label: str = "",
-              n_boot: int = 5000) -> dict:
-    tdf = result.trades_df()
-    if tdf.empty:
+              n_boot: int = 5000, verified_only: bool = True) -> dict:
+    """Headline stats use VERIFIED trades only by default — exits priced in
+    a demonstrably live market. Unverified trades (exit at the edge of data
+    coverage, or into an untraded resting price) are counted and reported
+    but never treated as evidence: that distinction is what separated a
+    +46%/trade mirage from the -23%/trade reality on this dataset."""
+    tdf_all = result.trades_df()
+    if tdf_all.empty:
         return {"label": label, "n_trades": 0,
                 "n_candidates": result.n_candidates}
+    n_all = len(tdf_all)
+    tdf = tdf_all[tdf_all["verified"]] if verified_only and "verified" in tdf_all \
+        else tdf_all
+    if tdf.empty:
+        return {"label": label, "n_trades": 0, "n_trades_unverified": n_all,
+                "n_candidates": result.n_candidates,
+                "note": "no verifiable exits — no evidence"}
     rets = tdf["ret"].to_numpy()
     pnl = tdf["pnl_usd"].to_numpy()
     # cluster by TOKEN mint (one token can have several pools; their trades
@@ -74,6 +86,7 @@ def summarize(result: BacktestResult, label: str = "",
     return {
         "label": label,
         "n_trades": int(len(tdf)),
+        "n_unverified_excluded": int(n_all - len(tdf)),
         "n_tokens": int(len(np.unique(clusters))),
         "n_candidates": result.n_candidates,
         "n_skipped_risk": result.n_skipped_risk,

@@ -52,6 +52,7 @@ class Trade:
     pool: str
     symbol: str | None
     mint: str | None
+    verified: bool          # exit priced in a demonstrably live market
     entry_ts: int
     exit_ts: int
     entry_price: float
@@ -74,7 +75,8 @@ class BacktestResult:
     def trades_df(self) -> pd.DataFrame:
         return pd.DataFrame([{
             "pool": t.pool, "symbol": t.symbol,
-            "mint": t.mint or t.pool, "entry_ts": t.entry_ts,
+            "mint": t.mint or t.pool, "verified": t.verified,
+            "entry_ts": t.entry_ts,
             "exit_ts": t.exit_ts, "hold_min": (t.exit_ts - t.entry_ts) / 60,
             "size_usd": t.size_usd, "pnl_usd": t.pnl_usd, "ret": t.ret_frac,
             "reason": t.exit_reason,
@@ -182,7 +184,24 @@ def simulate_position(df: pd.DataFrame, fill_idx: int, size_usd: float,
     exit_ts = int(fills[-1].ts)
     flat_fees = costs.flat_fee_usd * n_tx
     pnl = proceeds - size_usd - flat_fees
-    return Trade(pool=pool, symbol=symbol, mint=mint,
+
+    # EXIT VERIFIABILITY — the difference between a backtest and a mirage.
+    # The minute grid carries the resting AMM price through untraded
+    # minutes, so a position can "exit" at a price nobody traded at, at the
+    # edge of our data coverage. A trade counts as evidence only if the
+    # market was demonstrably alive at the exit AND kept trading afterwards
+    # (proving the pool did not simply end there).
+    vol = (df["vol_usd"].to_numpy(dtype=float)
+           if "vol_usd" in df.columns else np.zeros(n))
+    j_exit = int(np.searchsorted(ts, exit_ts))
+    j_exit = min(max(j_exit, 0), n - 1)
+    near = vol[max(0, j_exit - 2): j_exit + 3]
+    exit_live = bool(np.nansum(near) > 0)
+    after = vol[j_exit + 1:]
+    lived_on = bool(np.isfinite(after).any() and (after > 0).sum() >= 10)
+    verified = exit_live and lived_on
+
+    return Trade(pool=pool, symbol=symbol, mint=mint, verified=verified,
                  entry_ts=int(ts[fill_idx]),
                  exit_ts=exit_ts, entry_price=entry_price, size_usd=size_usd,
                  pnl_usd=pnl, ret_frac=pnl / size_usd, exit_reason=exit_reason,

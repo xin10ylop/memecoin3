@@ -39,6 +39,7 @@ import requests
 from ..backtest.costs import CostModel
 from ..config import Config, live_trading_armed
 from ..data.jupiter import SOL_MINT, Jupiter
+from ..data.gt import GeckoTerminal
 from ..data.helius import Helius
 from ..data.rpc import SolanaRpc
 from ..execution import PaperExecutor
@@ -75,6 +76,15 @@ MIN_ACCEL = 1.0        # minute-2 activity must at least match minute-1
 # n<=60. The loosest cut is used deliberately: it excludes only the extreme
 # and adds the fewest degrees of freedom to overfit.
 MAX_ACCEL = 10.0       # above this the launch is a frenzy, not a trend
+# A separate question from alpha: can the pool be TRADED at all? A live
+# entry fired on a pool whose first two minutes carried one dollar of
+# volume -- its "range" was a stale resting price moving on nothing, and
+# its acceleration ratio was two tiny numbers divided by each other. The
+# backtest cannot object because such a pool costs nothing to hold in a
+# spreadsheet. Real money cannot get in or out of it. This floor is set
+# low deliberately: it excludes the untradeable, not the merely small,
+# since volume LEVEL was tested as an alpha filter and did not help.
+MIN_SOL_VOL2 = 0.5     # total SOL swapped in the first two minutes
 MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
                        # Jupiter's batch price call intermittently omits
                        # brand-new mints, so demanding 6 samples was
@@ -134,6 +144,7 @@ class RealtimeScalper:
         self.jup = Jupiter(per_min=24)
         self.rpc = SolanaRpc()
         self.helius = Helius()
+        self.gt = GeckoTerminal()
         self.safety = SafetyGate(cfg, self.rpc, self.jup)
         self.risk = RiskManager(cfg)
         self.notify = Notifier(cfg.telegram.enabled)
@@ -152,6 +163,7 @@ class RealtimeScalper:
         self.sol_price = 100.0
         self._seen_sigs: set[str] = set()
         self._crash_count: dict[str, int] = {}
+        self._last_vol2: float | None = None
         log.info("scalper up: mode=%s cash=%.2f positions=%d",
                  "LIVE" if self.is_live else "PAPER", self.cash,
                  len(self.positions))
@@ -214,8 +226,10 @@ class RealtimeScalper:
             n = len([p for p in c.prices if p])
             accel = self.acceleration(mint, c.detected_ts) if (
                 n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
+            vol2 = self._last_vol2
             ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE and accel is not None
-                  and MIN_ACCEL <= accel < MAX_ACCEL)
+                  and MIN_ACCEL <= accel < MAX_ACCEL
+                  and (vol2 is None or vol2 >= MIN_SOL_VOL2))
             self._journal(mint, rng, n, accel, ok)
             if not ok:
                 log.info("skip %s: range %.1f%% samples %d accel %s "
@@ -289,6 +303,43 @@ class RealtimeScalper:
                 # confirm against an executable quote before writing off 90%
                 qp = self.quote_price(pos.mint, pos.tokens, pos.decimals)
                 if qp:
+                    # The confirmation guard belongs on EVERY exit path, not
+                    # just the index-price one. A live position was closed
+                    # here at 2.2e-07 while its token traded at 9.2e-05 in a
+                    # \$26k pool -- a +13% winner booked as a total loss
+                    # because a single quote on a two-minute-old token
+                    # routed somewhere thin. One reading may not close a
+                    # position; a real collapse survives the next poll.
+                    ref = min(pos.entry_price, pos.hwm_price)
+                    if qp < ref * (1 - CRASH_FRAC):
+                        # An aggregator that cannot ROUTE a token is not the
+                        # same as a token that is worthless. 2KKwjF quoted
+                        # 2.2e-07 while its pool held \$26k and traded at
+                        # 9.2e-05; Jupiter had no index price for it at all.
+                        # A real seller can go straight to the pool. So
+                        # before booking a wipeout, ask whether the pool is
+                        # alive RIGHT NOW -- current reserve and current
+                        # volume, not a stale snapshot, which is the
+                        # distinction that made the F7V4a5 rug look fake.
+                        alive = self.pool_alive_price(pos.mint)
+                        if alive:
+                            log.warning("%s: quote %.3e unroutable but pool "
+                                        "is alive at %.3e — marking to pool",
+                                        pos.symbol, qp, alive)
+                            qp = alive
+                    if qp < ref * (1 - CRASH_FRAC):
+                        k = self._crash_count.get(pos.mint, 0) + 1
+                        self._crash_count[pos.mint] = k
+                        if k < CONFIRM_POLLS:
+                            log.warning("%s: quote implies %.0f%% wipeout "
+                                        "(%.3e vs %.3e) — awaiting "
+                                        "confirmation %d/%d", pos.symbol,
+                                        100 * (1 - qp / ref), qp, ref, k,
+                                        CONFIRM_POLLS)
+                            self.state.save_position(pos)
+                            continue
+                    else:
+                        self._crash_count.pop(pos.mint, None)
                     pos.hwm_price = max(pos.hwm_price, qp)
                     if qp <= pos.hwm_price * (1 - TRAIL) or held >= MAX_HOLD_MIN:
                         self._exit(pos, qp, "quote_exit")
@@ -390,6 +441,22 @@ class RealtimeScalper:
         except Exception as e:                       # journalling is never
             log.debug("journal write failed: %s", e)  # allowed to block a trade
 
+    def pool_alive_price(self, mint: str) -> float | None:
+        """Current price from the token's best pool, if that pool is
+        demonstrably still trading. Returns None when nothing is alive, so
+        a genuine rug still books as a loss."""
+        try:
+            pools = self.gt.token_pools(mint)
+        except Exception as e:
+            log.debug("pool lookup failed for %s: %s", mint[:10], e)
+            return None
+        for p in pools[:3]:
+            reserve = p.reserve_usd or 0.0
+            vol5 = p.vol_m5 or 0.0
+            if reserve >= 500 and vol5 > 0 and (p.price_usd or 0) > 0:
+                return float(p.price_usd)
+        return None
+
     def acceleration(self, mint: str, since_ts: float | None = None) -> float | None:
         """minute-2 volume / minute-1 volume -- the VALIDATED quantity.
 
@@ -412,7 +479,9 @@ class RealtimeScalper:
                 log.warning("volume lookup failed for %s: %s", mint[:10], e)
                 v = []
             if len(v) >= 2 and v[0] > 0:
+                self._last_vol2 = float(v[0] + v[1])
                 return v[1] / v[0]
+            self._last_vol2 = None
             return None
         try:
             a = self.rpc.activity_per_minute(mint, since_ts=since_ts)

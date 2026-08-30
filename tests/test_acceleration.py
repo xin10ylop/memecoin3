@@ -99,3 +99,40 @@ def test_truncated_window_can_still_reject_but_never_accept():
     # truncated but apparently RISING -> unsafe, withhold
     rising = FakeHelius([swap(t + 300, 1_000), swap(t + 370, 10_000)])
     assert rising.swap_volume_per_minute("M", since_ts=t) == []
+
+
+def test_unroutable_token_with_a_live_pool_is_not_marked_to_zero():
+    """An aggregator that cannot route a token has not proved it worthless.
+    A live pool overrides the quote; a dead one does not."""
+    from memebot.data.gt import PoolStats
+
+    def pool(reserve, vol5, price):
+        return PoolStats(address="p", base_mint="m", symbol="S", name="N",
+                         dex_id="d", created_ts=0, price_usd=price,
+                         reserve_usd=reserve, fdv_usd=None,
+                         market_cap_usd=None, vol_m5=vol5, vol_h1=None,
+                         vol_h24=None, buys_m5=None, sells_m5=None,
+                         buyers_m5=None, sellers_m5=None,
+                         price_change_m5=None, price_change_h1=None)
+
+    class Fake:
+        def __init__(self, pools):
+            self._p = pools
+
+        def token_pools(self, mint):
+            return self._p
+
+    class Scalp:
+        pool_alive_price = None
+
+    from memebot.live.scalper import RealtimeScalper
+    obj = RealtimeScalper.__new__(RealtimeScalper)
+
+    obj.gt = Fake([pool(26_000, 5_000, 9.17e-05)])
+    assert obj.pool_alive_price("m") == 9.17e-05          # alive -> use it
+
+    obj.gt = Fake([pool(0.0, 0.0, 4.6e-08)])
+    assert obj.pool_alive_price("m") is None              # dead -> real loss
+
+    obj.gt = Fake([pool(26_000, 0.0, 9.17e-05)])
+    assert obj.pool_alive_price("m") is None              # no trades -> no proof

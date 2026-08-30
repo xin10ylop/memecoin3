@@ -346,7 +346,23 @@ class RealtimeScalper:
                     else:
                         self.state.save_position(pos)
                 elif held >= 10:
-                    self._exit(pos, pos.entry_price * 0.1, "no_route")
+                    # No route from the aggregator is not proof of death.
+                    # Two live positions were written off 90% here while
+                    # their tokens traded within a few percent of entry --
+                    # one in a pool still holding \$23,670. Ask the pool
+                    # before booking the loss, and keep holding a live
+                    # position to its normal horizon instead of closing it
+                    # early at a fabricated price.
+                    alive = self.pool_alive_price(pos.mint)
+                    if alive:
+                        pos.hwm_price = max(pos.hwm_price, alive)
+                        if alive <= pos.hwm_price * (1 - TRAIL) \
+                                or held >= MAX_HOLD_MIN:
+                            self._exit(pos, alive, "pool_exit")
+                        else:
+                            self.state.save_position(pos)
+                    else:
+                        self._exit(pos, pos.entry_price * 0.1, "no_route")
                 continue
             # the index price only SCREENS; every exit is confirmed against
             # an executable quote so one bad index tick cannot dump a position
@@ -452,8 +468,13 @@ class RealtimeScalper:
             return None
         for p in pools[:3]:
             reserve = p.reserve_usd or 0.0
-            vol5 = p.vol_m5 or 0.0
-            if reserve >= 500 and vol5 > 0 and (p.price_usd or 0) > 0:
+            # Recent volume is the WRONG test. An AMM holding real reserves
+            # will fill a \$10 sale whether or not anyone happened to trade
+            # in the last five minutes; 2K1tZz was written off 90% while its
+            # pool held \$23,670 and its price sat 1% above our entry.
+            # Reserve is what proves a position can be sold. The floor is
+            # set so our clip is a small fraction of the pool.
+            if reserve >= 1000 and (p.price_usd or 0) > 0:
                 return float(p.price_usd)
         return None
 

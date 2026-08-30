@@ -60,3 +60,13 @@ def test_frenzy_is_rejected_by_the_ceiling():
     for ratio, ok in [(0.5, False), (1.0, True), (2.0, True),
                       (9.9, True), (10.0, False), (50.0, False)]:
         assert (MIN_ACCEL <= ratio < MAX_ACCEL) is ok
+
+
+def test_truncated_history_yields_no_opinion_not_a_wrong_ratio():
+    """If the signature window does not reach the launch, the first bucket
+    is a partial minute and any ratio from it is fiction."""
+    t = 1_700_000_000
+    r = FakeRpc([t + 300, t + 360])          # history starts 5 min late
+    assert r.activity_per_minute("M", since_ts=t) == []
+    # ...but a window that does reach it is fine
+    assert r.activity_per_minute("M", since_ts=t + 295) == [1, 1]

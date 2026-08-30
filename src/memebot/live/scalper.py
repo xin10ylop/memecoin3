@@ -210,10 +210,12 @@ class RealtimeScalper:
             c.decided = True
             rng = c.range_frac()
             n = len([p for p in c.prices if p])
-            accel = self.acceleration(mint) if (
+            accel = self.acceleration(mint, c.detected_ts) if (
                 n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
-            if n < MIN_SAMPLES or rng < MIN_RANGE or accel is None \
-                    or not (MIN_ACCEL <= accel < MAX_ACCEL):
+            ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE and accel is not None
+                  and MIN_ACCEL <= accel < MAX_ACCEL)
+            self._journal(mint, rng, n, accel, ok)
+            if not ok:
                 log.info("skip %s: range %.1f%% samples %d accel %s "
                          "(need >=%.1f%%, %d, >=%.1f)",
                          mint[:10], rng * 100, n,
@@ -362,7 +364,31 @@ class RealtimeScalper:
             return None
         return (out / 1e9 * self.sol_price) / tokens
 
-    def acceleration(self, mint: str) -> float | None:
+    def _journal(self, mint: str, rng: float, n: int,
+                 accel: float | None, taken: bool) -> None:
+        """Record EVERY candidate and the features it was judged on.
+
+        Thresholds validated on historical bars had to be ported onto a
+        different live measurement, and the port was wrong -- the backtest
+        used minute-2/minute-1 USD volume, the scalper counts transactions,
+        and the 1.0 threshold moved across unexamined. Mapping one onto the
+        other is a workaround; the real fix is a dataset of the feature the
+        LIVE system actually computes, paired with the outcome that
+        followed. Skipped candidates are the important half: without them
+        there is no way to ask what a different threshold would have earned.
+        """
+        try:
+            self.state.db.execute(
+                "INSERT OR REPLACE INTO candidate_journal "
+                "(mint, ts, range_frac, samples, accel, taken) "
+                "VALUES (?,?,?,?,?,?)",
+                (mint, time.time(), float(rng), int(n),
+                 float(accel) if accel is not None else None, int(taken)))
+            self.state.db.commit()
+        except Exception as e:                       # journalling is never
+            log.debug("journal write failed: %s", e)  # allowed to block a trade
+
+    def acceleration(self, mint: str, since_ts: float | None = None) -> float | None:
         """minute-2 trade count / minute-1 trade count, straight off chain.
 
         A launch whose second minute trades less than its first has already
@@ -371,7 +397,7 @@ class RealtimeScalper:
         aggregator volume can supply it in time.
         """
         try:
-            a = self.rpc.activity_per_minute(mint)
+            a = self.rpc.activity_per_minute(mint, since_ts=since_ts)
         except Exception as e:                       # never block on RPC
             log.warning("activity lookup failed for %s: %s", mint[:10], e)
             return None

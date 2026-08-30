@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS equity (
     equity_usd REAL, cash_usd REAL, n_positions INTEGER
 );
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+
+CREATE TABLE IF NOT EXISTS candidate_journal (
+    mint TEXT PRIMARY KEY,
+    ts REAL,
+    range_frac REAL,
+    samples INTEGER,
+    accel REAL,
+    taken INTEGER
+);
 """
 
 

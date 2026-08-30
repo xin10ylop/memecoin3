@@ -104,7 +104,8 @@ class SolanaRpc:
                 continue
         return total
 
-    def activity_per_minute(self, address: str, limit: int = 300) -> list[int]:
+    def activity_per_minute(self, address: str, limit: int = 1000,
+                            since_ts: float | None = None) -> list[int]:
         """Signature counts for the last few minutes, oldest minute first.
 
         The scalper's entry decision needs to know whether trading is
@@ -119,6 +120,13 @@ class SolanaRpc:
         times = sorted(s["blockTime"] for s in sigs
                        if isinstance(s, dict) and s.get("blockTime"))
         if not times:
+            return []
+        # The RPC returns only the most recent `limit` signatures. For a busy
+        # launch those may not reach back to its creation, in which case the
+        # first bucket is a PARTIAL minute and the ratio built from it is
+        # meaningless. Better to have no opinion than a wrong one: a wrong
+        # ratio silently changes which launches get bought.
+        if since_ts is not None and times[0] > since_ts + 20:
             return []
         t0 = times[0]
         buckets: dict[int, int] = {}

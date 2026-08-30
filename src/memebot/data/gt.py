@@ -137,3 +137,15 @@ class GeckoTerminal:
         bars = (((data or {}).get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
         return sorted((b for b in bars if isinstance(b, list) and len(b) >= 6),
                       key=lambda b: b[0])
+
+    def token_pools(self, mint: str) -> list[PoolStats]:
+        """Every pool trading this token, best-capitalised first.
+
+        A token minutes old typically lives in more than one pool (a bonding
+        curve and a fresh AMM). An aggregator can quote a sell through the
+        empty one and report a near-total loss on a token whose real pool is
+        healthy — so an implausible price must be checked against the pools
+        that actually exist before it is allowed to close a position.
+        """
+        pools = self._pools_call(f"/networks/solana/tokens/{mint}/pools")
+        return sorted(pools, key=lambda p: p.reserve_usd or 0.0, reverse=True)

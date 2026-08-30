@@ -68,6 +68,22 @@ MAX_HOLD_MIN = 30
 QUOTE_RESERVE = 1e9
 
 
+# Calibrated from a live post-mortem worth recording. A position was marked
+# down 99.8% in one poll; a GeckoTerminal snapshot still showed the pool
+# healthy, so the mark looked like an aggregator routing our sell through a
+# dead pool. The minute bars proved the opposite: the rug happened DURING
+# that minute, the quote was right, and the GT snapshot was the stale one.
+# The lesson is not to distrust quotes — it is that a lagging source must
+# never overrule a real-time one, and that a real loss must never be
+# explained away as an instrument fault.
+# So the guard stays, but only where hesitating is nearly free: at a 95%+
+# wipeout one extra poll costs pennies of an already-dead position, while a
+# genuinely phantom zero would cost the whole clip. Ordinary sharp drops
+# (a -60% leg down is normal here) exit immediately, as they must.
+CRASH_FRAC = 0.95          # only a near-total wipeout awaits confirmation
+CONFIRM_POLLS = 2          # consecutive readings required
+
+
 @dataclass
 class Candidate:
     mint: str
@@ -111,6 +127,7 @@ class RealtimeScalper:
         self.cash = float(cash) if cash is not None else cfg.capital.starting_usd
         self.sol_price = 100.0
         self._seen_sigs: set[str] = set()
+        self._crash_count: dict[str, int] = {}
         log.info("scalper up: mode=%s cash=%.2f positions=%d",
                  "LIVE" if self.is_live else "PAPER", self.cash,
                  len(self.positions))
@@ -253,10 +270,22 @@ class RealtimeScalper:
             if p <= pos.hwm_price * (1 - TRAIL) or held >= MAX_HOLD_MIN:
                 qp = self.quote_price(pos.mint, pos.tokens, pos.decimals)
                 real = qp if qp else p
-                if qp and p > 0 and (qp / p > 2 or qp / p < 0.5):
-                    log.warning("price disagreement on %s: index %.3e vs "
-                                "quote %.3e - trusting the quote",
-                                pos.symbol, p, qp)
+                # An implausible collapse must be CONFIRMED before it can
+                # close a position — routing through a dead pool looks
+                # identical to a rug for exactly one reading.
+                ref = min(pos.entry_price, pos.hwm_price)
+                if real < ref * (1 - CRASH_FRAC):
+                    n = self._crash_count.get(pos.mint, 0) + 1
+                    self._crash_count[pos.mint] = n
+                    if n < CONFIRM_POLLS:
+                        log.warning("%s: implausible %.0f%% drop (%.3e vs "
+                                    "%.3e) — awaiting confirmation %d/%d",
+                                    pos.symbol, 100 * (1 - real / ref), real,
+                                    ref, n, CONFIRM_POLLS)
+                        self.state.save_position(pos)
+                        continue
+                else:
+                    self._crash_count.pop(pos.mint, None)
                 pos.hwm_price = max(pos.hwm_price, real)
                 if held >= MAX_HOLD_MIN:
                     self._exit(pos, real, "time")
@@ -265,6 +294,7 @@ class RealtimeScalper:
                 else:
                     self.state.save_position(pos)
             else:
+                self._crash_count.pop(pos.mint, None)
                 pos.hwm_price = max(pos.hwm_price, p)
                 self.state.save_position(pos)
 

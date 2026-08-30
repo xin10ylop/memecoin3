@@ -162,19 +162,20 @@ def f(x):
 
 
 def snapshot_new_pools(gt: GTClient, db: sqlite3.Connection, pages: int) -> int:
+    """Sweep the newest-pools feed. Network first, then ONE short write
+    transaction — holding a write lock across rate-limited API calls locked
+    out every other process for 30s+ at a time."""
     ts = int(time.time())
-    n = 0
+    pool_rows, snap_rows = [], []
     for page in range(1, pages + 1):
-        data = gt.get("/networks/solana/new_pools", {"page": page, "include": "base_token,dex"})
+        data = gt.get("/networks/solana/new_pools",
+                      {"page": page, "include": "base_token,dex"})
         if not data or "data" not in data:
             continue
         tokens = {}
-        dexes = {}
         for inc in data.get("included", []) or []:
             if inc.get("type") == "token":
                 tokens[inc["id"]] = inc.get("attributes", {})
-            elif inc.get("type") == "dex":
-                dexes[inc["id"]] = inc.get("attributes", {})
         for item in data["data"]:
             a = item.get("attributes", {})
             rel = item.get("relationships", {})
@@ -185,28 +186,28 @@ def snapshot_new_pools(gt: GTClient, db: sqlite3.Connection, pages: int) -> int:
             base_mint = bt_id.split("_", 1)[1] if "_" in bt_id else None
             tok = tokens.get(bt_id, {})
             dex_id = (((rel.get("dex") or {}).get("data") or {}).get("id")) or None
-            db.execute(
-                "INSERT OR IGNORE INTO pools VALUES (?,?,?,?,?,?,?)",
-                (addr, base_mint, tok.get("symbol"), tok.get("name"), dex_id,
-                 a.get("pool_created_at"), now_iso()),
-            )
+            pool_rows.append((addr, base_mint, tok.get("symbol"), tok.get("name"),
+                              dex_id, a.get("pool_created_at"), now_iso()))
             vol = a.get("volume_usd") or {}
             tx = a.get("transactions") or {}
             m5 = tx.get("m5") or {}
             h1 = tx.get("h1") or {}
             pc = a.get("price_change_percentage") or {}
-            db.execute(
-                "INSERT OR REPLACE INTO snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (addr, ts, f(a.get("base_token_price_usd")), f(a.get("reserve_in_usd")),
-                 f(a.get("fdv_usd")), f(a.get("market_cap_usd")),
-                 f(vol.get("m5")), f(vol.get("h1")), f(vol.get("h24")),
-                 m5.get("buys"), m5.get("sells"), m5.get("buyers"), m5.get("sellers"),
-                 h1.get("buys"), h1.get("sells"),
-                 f(pc.get("m5")), f(pc.get("h1"))),
-            )
-            n += 1
-    db.commit()
-    return n
+            snap_rows.append((
+                addr, ts, f(a.get("base_token_price_usd")),
+                f(a.get("reserve_in_usd")), f(a.get("fdv_usd")),
+                f(a.get("market_cap_usd")), f(vol.get("m5")), f(vol.get("h1")),
+                f(vol.get("h24")), m5.get("buys"), m5.get("sells"),
+                m5.get("buyers"), m5.get("sellers"), h1.get("buys"),
+                h1.get("sells"), f(pc.get("m5")), f(pc.get("h1"))))
+    if pool_rows:
+        db.executemany("INSERT OR IGNORE INTO pools VALUES (?,?,?,?,?,?,?)",
+                       pool_rows)
+        db.executemany(
+            "INSERT OR REPLACE INTO snapshots VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", snap_rows)
+        db.commit()
+    return len(snap_rows)
 
 
 def _insert_snapshot_row(db: sqlite3.Connection, ts: int, a: dict) -> None:
@@ -246,15 +247,16 @@ def snapshot_tracked(gt: GTClient, db: sqlite3.Connection,
     ).fetchall()
     addrs = [r[0] for r in rows]
     ts = int(time.time())
-    n = 0
-    for i in range(0, len(addrs), 30):
+    fetched = []
+    for i in range(0, len(addrs), 30):        # network first, no lock held
         chunk = ",".join(addrs[i:i + 30])
         data = gt.get(f"/networks/solana/pools/multi/{chunk}")
         for item in (data or {}).get("data") or []:
-            _insert_snapshot_row(db, ts, item.get("attributes") or {})
-            n += 1
+            fetched.append(item.get("attributes") or {})
+    for a in fetched:                          # one short write transaction
+        _insert_snapshot_row(db, ts, a)
     db.commit()
-    return n
+    return len(fetched)
 
 
 def snapshot_trending(gt: GTClient, db: sqlite3.Connection) -> int:
@@ -453,7 +455,11 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
-    db = sqlite3.connect(args.db)
+    # WAL + a real busy timeout: the cohort tracker writes concurrently,
+    # and sqlite's 5s default made both processes throw "database is locked"
+    db = sqlite3.connect(args.db, timeout=60)
+    db.execute("PRAGMA busy_timeout=60000")
+    db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
     gt = GTClient(RateLimiter(args.rate))
     ds_session = requests.Session()

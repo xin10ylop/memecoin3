@@ -33,6 +33,7 @@ import logging
 import sqlite3
 import sys
 import time
+import zlib
 
 sys.path.insert(0, "src")
 
@@ -59,9 +60,13 @@ CREATE INDEX IF NOT EXISTS idx_cohort_due ON cohort(track_until, n_fetches);
 
 
 def register(gt: GeckoTerminal, db: sqlite3.Connection, max_age_min: int,
-             track_hours: float, pages: int) -> int:
-    """Register every pool younger than max_age_min. NO other filter — that
-    unconditionality is the whole point."""
+             track_hours: float, pages: int, sample_rate: float = 1.0) -> int:
+    """Register pools younger than max_age_min. NO outcome-dependent filter —
+    that unconditionality is the whole point. When registration outruns
+    harvest capacity, thin the intake by a STABLE HASH of the address: a
+    random subset of an unconditional sample is still unconditional, whereas
+    dropping the overflow (or the least interesting) would reintroduce
+    exactly the fate-correlation this tracker exists to remove."""
     now = int(time.time())
     fresh = []
     for page in range(1, pages + 1):          # network first, no DB lock held
@@ -69,6 +74,9 @@ def register(gt: GeckoTerminal, db: sqlite3.Connection, max_age_min: int,
             if not p.address or p.created_ts is None:
                 continue
             if now - p.created_ts > max_age_min * 60:
+                continue
+            if sample_rate < 1.0 and \
+                    (zlib.crc32(p.address.encode()) % 10000) >= sample_rate * 10000:
                 continue
             fresh.append((p.address, p.base_mint, p.symbol, p.dex_id,
                           p.created_ts, now, now + int(track_hours * 3600)))
@@ -133,6 +141,8 @@ def main() -> int:
                     help="how long each registered pool is tracked")
     ap.add_argument("--late-hours", type=float, default=3.0,
                     help="delay before the second (late) harvest")
+    ap.add_argument("--sample-rate", type=float, default=1.0,
+                    help="stable-hash fraction of new pools to register")
     ap.add_argument("--max-age-min", type=int, default=45,
                     help="register pools younger than this")
     ap.add_argument("--rate", type=float, default=6.0, help="GT calls/min")
@@ -160,7 +170,8 @@ def main() -> int:
         cycle += 1
         try:
             reg = register(gt, db, args.max_age_min, args.track_hours,
-                           pages=1 if cycle % 2 else 2)
+                           pages=1 if cycle % 2 else 2,
+                           sample_rate=args.sample_rate)
             calls, bars, firsts = harvest(gt, db, args.track_budget,
                                           args.late_hours)
             pending = db.execute(

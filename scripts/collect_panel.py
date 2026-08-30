@@ -263,9 +263,9 @@ def snapshot_trending(gt: GTClient, db: sqlite3.Connection) -> int:
     """Record trending events AND register trending pools in `pools` (so they
     get tracked + OHLCV-backfilled). Their discovery is rank-conditioned —
     only valid for entry-at-trending-event studies, never for population
-    stats; first_seen_at marks when we could first have traded them."""
+    stats. Network first, then one short write transaction."""
     ts = int(time.time())
-    n = 0
+    trend_rows, pool_rows, snap_attrs = [], [], []
     for page in (1, 2):
         data = gt.get("/networks/solana/trending_pools",
                       {"page": page, "duration": "5m", "include": "base_token,dex"})
@@ -279,21 +279,23 @@ def snapshot_trending(gt: GTClient, db: sqlite3.Connection) -> int:
             addr = a.get("address")
             if not addr:
                 continue
-            db.execute("INSERT OR IGNORE INTO trending VALUES (?,?)", (addr, ts))
+            trend_rows.append((addr, ts))
             rel = item.get("relationships") or {}
             bt_id = (((rel.get("base_token") or {}).get("data") or {}).get("id")) or ""
             base_mint = bt_id.split("_", 1)[1] if "_" in bt_id else None
             tok = tokens.get(bt_id, {})
             dex_id = (((rel.get("dex") or {}).get("data") or {}).get("id")) or None
-            db.execute(
-                "INSERT OR IGNORE INTO pools VALUES (?,?,?,?,?,?,?)",
-                (addr, base_mint, tok.get("symbol"), tok.get("name"), dex_id,
-                 a.get("pool_created_at"), now_iso()),
-            )
+            pool_rows.append((addr, base_mint, tok.get("symbol"), tok.get("name"),
+                              dex_id, a.get("pool_created_at"), now_iso()))
+            snap_attrs.append(a)
+    if trend_rows:
+        db.executemany("INSERT OR IGNORE INTO trending VALUES (?,?)", trend_rows)
+        db.executemany("INSERT OR IGNORE INTO pools VALUES (?,?,?,?,?,?,?)",
+                       pool_rows)
+        for a in snap_attrs:
             _insert_snapshot_row(db, ts, a)
-            n += 1
-    db.commit()
-    return n
+        db.commit()
+    return len(trend_rows)
 
 
 def snapshot_dexscreener_attention(db: sqlite3.Connection,

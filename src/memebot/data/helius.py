@@ -53,8 +53,16 @@ class Helius:
 
     def swap_volume_per_minute(self, address: str,
                                since_ts: float | None = None,
-                               max_pages: int = 3) -> list[float]:
+                               max_pages: int = 12) -> list[float]:
         """SOL volume per minute since the first swap seen, oldest first.
+
+        Paging matters more than it looks. At 100 transactions per page a
+        BUSY launch -- hundreds of swaps in its first two minutes -- is
+        exactly the one a short window fails to reach back through, so a
+        low page cap silently blinds the filter to the most active
+        launches, which are the ones most worth judging. Live journalling
+        caught this: 16 of 21 range-qualifying candidates returned no
+        opinion at 3 pages.
 
         Each swap is valued at its largest native transfer, which is the
         SOL leg of the trade; summing every transfer would double-count
@@ -80,8 +88,7 @@ class Helius:
         # Same discipline as the signature counter: if the window never
         # reached the launch, the first bucket is a partial minute and any
         # ratio from it is fiction. No opinion beats a wrong one.
-        if since_ts is not None and min(times) > since_ts + 20:
-            return []
+        truncated = since_ts is not None and min(times) > since_ts + 20
         t0 = min(times)
         buckets: dict[int, float] = {}
         for t in swaps:
@@ -90,4 +97,15 @@ class Helius:
                 if t.get("nativeTransfers") else 0
             idx = int((t["timestamp"] - t0) // 60)
             buckets[idx] = buckets.get(idx, 0.0) + lamports / 1e9
-        return [buckets.get(i, 0.0) for i in range(max(buckets) + 1)]
+        out = [buckets.get(i, 0.0) for i in range(max(buckets) + 1)]
+        if truncated:
+            # The window missed the start, so bucket 0 holds only PART of
+            # minute one and the ratio built on it is overstated. That is
+            # still enough to reject: the true first minute can only be
+            # larger, so a ratio already below the floor is genuinely
+            # below it. Only an apparent PASS is unsafe, and that is
+            # withheld.
+            if len(out) >= 2 and out[0] > 0 and out[1] / out[0] < 1.0:
+                return out
+            return []
+        return out

@@ -70,3 +70,32 @@ def test_truncated_history_yields_no_opinion_not_a_wrong_ratio():
     assert r.activity_per_minute("M", since_ts=t) == []
     # ...but a window that does reach it is fine
     assert r.activity_per_minute("M", since_ts=t + 295) == [1, 1]
+
+
+def test_truncated_window_can_still_reject_but_never_accept():
+    """A window that missed the launch undercounts minute one, so the
+    ratio is overstated. An overstated ratio BELOW the floor is decisive;
+    one above it is not, and must be withheld."""
+    from memebot.data.helius import Helius
+
+    class FakeHelius(Helius):
+        def __init__(self, txs):
+            self.key = "k"
+            self._txs = txs
+
+        def transactions(self, address, limit=100, before=None):
+            return self._txs if before is None else []
+
+    t = 1_700_000_000
+    def swap(ts, lamports):
+        return {"type": "SWAP", "timestamp": ts, "signature": f"s{ts}",
+                "nativeTransfers": [{"amount": lamports}]}
+
+    # history starts 5 min late: truncated. Falling volume -> still rejectable
+    falling = FakeHelius([swap(t + 300, 10_000), swap(t + 370, 1_000)])
+    out = falling.swap_volume_per_minute("M", since_ts=t)
+    assert out and out[1] / out[0] < 1.0
+
+    # truncated but apparently RISING -> unsafe, withhold
+    rising = FakeHelius([swap(t + 300, 1_000), swap(t + 370, 10_000)])
+    assert rising.swap_volume_per_minute("M", since_ts=t) == []

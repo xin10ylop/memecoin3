@@ -59,6 +59,13 @@ MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
                        # range) for our feed's reliability, not the token's
 TRAIL = 0.30
 MAX_HOLD_MIN = 30
+# Fills are priced from Jupiter quotes, which already contain the real
+# slippage for our size. Passing an unknown reserve made the cost model
+# charge its punitive 10%/side "thin pool" default ON TOP of that — about
+# 18pp of phantom cost per round trip, which is why -30% trail exits were
+# booking as -36%. A large notional reserve makes that model a no-op and
+# leaves only the flat fee, so paper P&L reflects executable prices.
+QUOTE_RESERVE = 1e9
 
 
 @dataclass
@@ -187,22 +194,23 @@ class RealtimeScalper:
         if not px:
             self.candidates.pop(mint, None)
             return
-        # sanity-check the entry against an executable quote: buying at a
-        # phantom price guarantees an instant phantom loss
-        qp = self.quote_price(mint, size / px)
-        if qp and (qp / px > 3 or qp / px < 0.33):
+        # price the fill from a real BUY quote — it embeds the true slippage
+        # for our size, so the cost model must not charge impact again
+        bp = self.quote_buy_price(mint, size)
+        if bp and (bp / px > 3 or bp / px < 0.33):
             log.info("skip %s: entry price unreliable (index %.3e vs quote "
-                     "%.3e)", mint[:10], px, qp)
+                     "%.3e)", mint[:10], px, bp)
             self.candidates.pop(mint, None)
             return
-        px = qp or px
+        px = bp or px
         v = self.safety.check_sellability(mint, size, self.sol_price)
         if not v.ok:
             log.info("safety reject %s: %s", mint[:10], v.reason)
             self.candidates.pop(mint, None)
             return
-        rep = self.executor.buy(mint, size, px, None) if not self.is_live else \
-            self.executor.buy(mint, size, px, None, self.sol_price)
+        rep = (self.executor.buy(mint, size, px, QUOTE_RESERVE)
+               if not self.is_live else
+               self.executor.buy(mint, size, px, QUOTE_RESERVE, self.sol_price))
         if not rep.ok or rep.tokens <= 0:
             self.candidates.pop(mint, None)
             return
@@ -261,10 +269,10 @@ class RealtimeScalper:
                 self.state.save_position(pos)
 
     def _exit(self, pos: OpenPosition, px: float, reason: str) -> None:
-        rep = (self.executor.sell(pos.mint, pos.tokens, px, None, self.sol_price,
-                                  sell_all=True)
+        rep = (self.executor.sell(pos.mint, pos.tokens, px, QUOTE_RESERVE,
+                                  self.sol_price, sell_all=True)
                if self.is_live else
-               self.executor.sell(pos.mint, pos.tokens, px, None))
+               self.executor.sell(pos.mint, pos.tokens, px, QUOTE_RESERVE))
         if not rep.ok:
             self.notify.send(f"⚠️ SELL FAILED {pos.symbol} ({reason})")
             return
@@ -295,6 +303,18 @@ class RealtimeScalper:
         if out <= 0:
             return None
         return (out / 1e9 * self.sol_price) / tokens
+
+    def quote_buy_price(self, mint: str, usd: float) -> float | None:
+        """The price we would ACTUALLY PAY, from a real buy quote."""
+        lamports = int(usd / max(self.sol_price, 1e-9) * 1e9)
+        if lamports <= 0:
+            return None
+        q = self.jup.quote(SOL_MINT, mint, lamports, slippage_bps=1000)
+        out = int((q or {}).get("outAmount") or 0)
+        if out <= 0:
+            return None
+        tokens = out / 1e6          # pump.fun mints are 6-decimal
+        return usd / tokens if tokens > 0 else None
 
     def equity(self) -> float:
         return self.cash + sum(p.tokens * p.entry_price

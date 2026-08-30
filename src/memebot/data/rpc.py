@@ -103,3 +103,25 @@ class SolanaRpc:
             except (KeyError, TypeError, ValueError):
                 continue
         return total
+
+    def activity_per_minute(self, address: str, limit: int = 300) -> list[int]:
+        """Signature counts for the last few minutes, oldest minute first.
+
+        The scalper's entry decision needs to know whether trading is
+        ACCELERATING or dying, which is the single feature that separates
+        launches that keep trading from ones that stop dead (median second
+        minute at 12% of the first for the doomed, 120% for survivors).
+        Price polling cannot see it and aggregator volume lags by minutes,
+        so activity is counted straight off the chain.
+        """
+        sigs = self.call("getSignaturesForAddress",
+                         [address, {"limit": int(limit)}]) or []
+        times = sorted(s["blockTime"] for s in sigs
+                       if isinstance(s, dict) and s.get("blockTime"))
+        if not times:
+            return []
+        t0 = times[0]
+        buckets: dict[int, int] = {}
+        for t in times:
+            buckets[int((t - t0) // 60)] = buckets.get(int((t - t0) // 60), 0) + 1
+        return [buckets.get(i, 0) for i in range(max(buckets) + 1)]

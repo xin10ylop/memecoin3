@@ -52,6 +52,18 @@ log = logging.getLogger(__name__)
 OBS_SEC = 120          # observation window before deciding
 POLL_SEC = 10          # price sampling cadence (batched across candidates)
 MIN_RANGE = 0.172      # validated threshold: >=17.2% range in the window
+# Range alone is NOT tradable. Tested on every harvested pool with nothing
+# excluded for dying young, range>=17.2% returns -11.3% per trade
+# CI[-25.2%,+4.2%]: the rule buys the graveyard, and the graveyard was
+# invisible to earlier backtests because a pool that stops trading after
+# two minutes leaves too few bars to score.
+# What separates the doomed from the living is not how far price moved but
+# whether trading is still BUILDING. Median second minute, as a fraction of
+# the first: 0.12 for pools that die, 1.20 for pools still alive ten
+# minutes later. Requiring acceleration turns the same rule into +37.0%
+# per trade CI[+6.9%,+70.1%] (n=130), holds up out-of-sample (+19.3% on the
+# later half) and beats a same-size random subset of that period at p=0.012.
+MIN_ACCEL = 1.0        # minute-2 activity must at least match minute-1
 MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
                        # Jupiter's batch price call intermittently omits
                        # brand-new mints, so demanding 6 samples was
@@ -188,9 +200,15 @@ class RealtimeScalper:
             c.decided = True
             rng = c.range_frac()
             n = len([p for p in c.prices if p])
-            if n < MIN_SAMPLES or rng < MIN_RANGE:
-                log.info("skip %s: range %.1f%% samples %d (need >=%.1f%%, %d)",
-                         mint[:10], rng * 100, n, MIN_RANGE * 100, MIN_SAMPLES)
+            accel = self.acceleration(mint) if (
+                n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
+            if n < MIN_SAMPLES or rng < MIN_RANGE or accel is None \
+                    or accel < MIN_ACCEL:
+                log.info("skip %s: range %.1f%% samples %d accel %s "
+                         "(need >=%.1f%%, %d, >=%.1f)",
+                         mint[:10], rng * 100, n,
+                         f"{accel:.2f}" if accel is not None else "n/a",
+                         MIN_RANGE * 100, MIN_SAMPLES, MIN_ACCEL)
                 self.candidates.pop(mint, None)
                 continue
             self._enter(mint, c)
@@ -333,6 +351,23 @@ class RealtimeScalper:
         if out <= 0:
             return None
         return (out / 1e9 * self.sol_price) / tokens
+
+    def acceleration(self, mint: str) -> float | None:
+        """minute-2 trade count / minute-1 trade count, straight off chain.
+
+        A launch whose second minute trades less than its first has already
+        spent its buyers; one still building has ongoing demand. This is the
+        one feature that told the two apart, and neither price polling nor
+        aggregator volume can supply it in time.
+        """
+        try:
+            a = self.rpc.activity_per_minute(mint)
+        except Exception as e:                       # never block on RPC
+            log.warning("activity lookup failed for %s: %s", mint[:10], e)
+            return None
+        if len(a) < 2 or a[0] <= 0:
+            return None
+        return a[1] / a[0]
 
     def quote_buy_price(self, mint: str, usd: float) -> float | None:
         """The price we would ACTUALLY PAY, from a real buy quote."""

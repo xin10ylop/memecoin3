@@ -39,6 +39,7 @@ import requests
 from ..backtest.costs import CostModel
 from ..config import Config, live_trading_armed
 from ..data.jupiter import SOL_MINT, Jupiter
+from ..data.helius import Helius
 from ..data.rpc import SolanaRpc
 from ..execution import PaperExecutor
 from ..risk import OpenPosition, RiskManager
@@ -132,6 +133,7 @@ class RealtimeScalper:
                                priority_fee_usd=cfg.costs.priority_fee_usd)
         self.jup = Jupiter(per_min=24)
         self.rpc = SolanaRpc()
+        self.helius = Helius()
         self.safety = SafetyGate(cfg, self.rpc, self.jup)
         self.risk = RiskManager(cfg)
         self.notify = Notifier(cfg.telegram.enabled)
@@ -389,13 +391,29 @@ class RealtimeScalper:
             log.debug("journal write failed: %s", e)  # allowed to block a trade
 
     def acceleration(self, mint: str, since_ts: float | None = None) -> float | None:
-        """minute-2 trade count / minute-1 trade count, straight off chain.
+        """minute-2 volume / minute-1 volume -- the VALIDATED quantity.
 
         A launch whose second minute trades less than its first has already
-        spent its buyers; one still building has ongoing demand. This is the
-        one feature that told the two apart, and neither price polling nor
-        aggregator volume can supply it in time.
+        spent its buyers; one still building has ongoing demand.
+
+        This began as a transaction COUNT, because counting signatures is
+        cheap. Measured against the volume ratio the backtest validated,
+        that proxy ranked at +0.21 and picked the same launches only 63% of
+        the time against a 56% chance baseline -- a different filter
+        wearing the same threshold. On the one live rug in the ledger it
+        scored 3.94 (buy) where real volume scored 0.20 (reject).
+        So volume is now measured directly from parsed swaps, and the
+        counter is kept only as a fallback when Helius is unavailable.
         """
+        if self.helius.available:
+            try:
+                v = self.helius.swap_volume_per_minute(mint, since_ts=since_ts)
+            except Exception as e:
+                log.warning("volume lookup failed for %s: %s", mint[:10], e)
+                v = []
+            if len(v) >= 2 and v[0] > 0:
+                return v[1] / v[0]
+            return None
         try:
             a = self.rpc.activity_per_minute(mint, since_ts=since_ts)
         except Exception as e:                       # never block on RPC

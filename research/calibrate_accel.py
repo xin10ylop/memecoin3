@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, "research")
+from memebot.data.helius import Helius  # noqa: E402
 from memebot.data.rpc import SolanaRpc  # noqa: E402
 
 DB = sys.argv[1] if len(sys.argv) > 1 else "data/panel.db"
@@ -47,6 +48,7 @@ def main() -> int:
                 cands.append(ps)
     print(f"live pools in the measurable age window: {len(cands)}")
     rpc = SolanaRpc()
+    hel = Helius()
     rows = []
     for p in cands:
         bars = gt.ohlcv(p.address, limit=3)
@@ -61,10 +63,12 @@ def main() -> int:
             continue
         # the live feature, measured the way the scalper measures it
         a = rpc.activity_per_minute(mint, limit=1000)
-        if len(a) < 2 or a[0] <= 0:
+        hv = hel.swap_volume_per_minute(mint)
+        if len(a) < 2 or a[0] <= 0 or len(hv) < 2 or hv[0] <= 0:
             continue
         rows.append({"pool": p.address, "vol_ratio": vol_ratio,
-                     "tx_ratio": a[1] / a[0], "tx_m1": a[0], "tx_m2": a[1]})
+                     "tx_ratio": a[1] / a[0],
+                     "hel_ratio": hv[1] / hv[0]})
         if len(rows) >= 80:
             break
 
@@ -78,13 +82,21 @@ def main() -> int:
     df = pd.DataFrame(rows)
     print(f"pools measured with BOTH features: {len(df)}\n")
     print(f"{'feature':<12} {'p25':>8} {'median':>8} {'p75':>8} {'p90':>8}")
-    for col in ["vol_ratio", "tx_ratio"]:
+    for col in ["vol_ratio", "tx_ratio", "hel_ratio"]:
         q = df[col].quantile([.25, .5, .75, .9])
         print(f"{col:<12} {q[.25]:>8.2f} {q[.5]:>8.2f} {q[.75]:>8.2f} "
               f"{q[.9]:>8.2f}")
 
-    rho = df.vol_ratio.corr(df.tx_ratio, method="spearman")
-    print(f"\nrank correlation between them: {rho:+.3f}")
+    print("\nagreement with the VALIDATED feature (GT bar volume):")
+    kept0 = (df.vol_ratio >= VOL_THRESHOLD).mean()
+    for col in ["tx_ratio", "hel_ratio"]:
+        rho = df.vol_ratio.corr(df[col], method="spearman")
+        eq = float(df[col].quantile(1 - kept0)) if kept0 > 0 else float("nan")
+        agree = ((df.vol_ratio >= VOL_THRESHOLD) == (df[col] >= eq)).mean()
+        chance = kept0 ** 2 + (1 - kept0) ** 2
+        print(f"  {col:<10} rank rho {rho:+.3f} | picks the same pools "
+              f"{agree:.0%} (chance {chance:.0%}) | equiv threshold {eq:.2f}")
+    rho = df.vol_ratio.corr(df.hel_ratio, method="spearman")
 
     kept = (df.vol_ratio >= VOL_THRESHOLD).mean()
     print(f"volume rule (>= {VOL_THRESHOLD}) keeps {kept:.0%} of pools")

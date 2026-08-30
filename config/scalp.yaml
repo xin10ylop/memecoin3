@@ -1,0 +1,36 @@
+# Realtime launch scalper — the out-of-sample-validated signal.
+# Signal: in a pool's first ~2 minutes, both minutes traded AND price range
+# >= 17.2% (either direction). Exit: 30% trailing stop, 30-minute cap.
+# Evidence: research/harvest_grid.py — OOS +45.0% CI [+9.3%, +88.0%],
+# survives harsh accounting (+28%) and dropping the 5 best trades (+13.5%).
+# Fat tail: ~30% win rate, negative median, mean carried by the winners.
+
+strategy:
+  name: realtime_scalper
+
+capital:
+  starting_usd: 100.0
+  risk_per_trade_usd: 10.0     # pools are tiny (median ~$1.5k reserve)
+  max_concurrent: 6
+  max_exposure_frac: 0.6
+
+exits:
+  stop_frac: 0.90              # the trail is the stop for this strategy
+  trail_frac: 0.30
+  tp_levels: []
+  max_hold_minutes: 30
+
+safety:
+  # the population is brand-new pools by construction, so market-shape
+  # gates do not apply; sellability + honeypot checks still run
+  min_liquidity_usd: 0
+  min_age_minutes: 0
+  fdv_min_usd: 0
+  min_vol_h1_usd: 0
+  roundtrip_max_loss_frac: 0.35
+  sell_quote_max_impact_frac: 0.35
+  allow_unverified_holders: true
+
+live:
+  state_db: data/scalp.db
+  kill_file: data/KILL

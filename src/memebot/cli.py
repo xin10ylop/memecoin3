@@ -178,6 +178,7 @@ def main() -> int:
 
     sub.add_parser("paper")
     sub.add_parser("live")
+    sub.add_parser("scalp")      # realtime launch scalper (validated signal)
 
     p = sub.add_parser("safety")
     p.add_argument("--mint", required=True)
@@ -196,6 +197,11 @@ def main() -> int:
         return cmd_grid(args, cfg)
     if args.cmd == "walkforward":
         return cmd_walkforward(args, cfg)
+    if args.cmd == "scalp":
+        from .live.scalper import RealtimeScalper
+        cfg._d["mode"] = "paper" if not configmod.live_trading_armed() else cfg.mode
+        RealtimeScalper(cfg).run()
+        return 0
     if args.cmd == "paper":
         return cmd_trade(args, cfg, live=False)
     if args.cmd == "live":

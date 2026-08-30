@@ -36,7 +36,7 @@ class RateLimiter:
 
     def reward(self) -> None:
         with self._lock:
-            self.interval = max(self.base_interval, self.interval * 0.97)
+            self.interval = max(self.base_interval, self.interval * 0.90)
 
 
 class HttpClient:
@@ -66,7 +66,9 @@ class HttpClient:
                     return None
             if r.status_code == 429:
                 self.limiter.penalize()
-                time.sleep(5 * (attempt + 1))
+                log.info("429 on %s (interval now %.1fs)", url,
+                         self.limiter.interval)
+                time.sleep(3 * (attempt + 1))
                 continue
             if r.status_code == 404:
                 return None

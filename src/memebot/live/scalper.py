@@ -164,6 +164,7 @@ class RealtimeScalper:
         self._seen_sigs: set[str] = set()
         self._crash_count: dict[str, int] = {}
         self._last_vol2: float | None = None
+        self._pool_cache: dict[str, tuple[float, float | None]] = {}
         log.info("scalper up: mode=%s cash=%.2f positions=%d",
                  "LIVE" if self.is_live else "PAPER", self.cash,
                  len(self.positions))
@@ -461,6 +462,14 @@ class RealtimeScalper:
         """Current price from the token's best pool, if that pool is
         demonstrably still trading. Returns None when nothing is alive, so
         a genuine rug still books as a loss."""
+        # Cached: a held position asks this on every poll, and hammering
+        # the pools endpoint every few seconds earned a 429 storm that
+        # throttled the whole GT client to 10s intervals. Pool reserves do
+        # not change fast enough to need a fresh call per poll.
+        now = time.time()
+        hit = self._pool_cache.get(mint)
+        if hit and now - hit[0] < 60:
+            return hit[1]
         try:
             pools = self.gt.token_pools(mint)
         except Exception as e:
@@ -475,7 +484,9 @@ class RealtimeScalper:
             # Reserve is what proves a position can be sold. The floor is
             # set so our clip is a small fraction of the pool.
             if reserve >= 1000 and (p.price_usd or 0) > 0:
+                self._pool_cache[mint] = (now, float(p.price_usd))
                 return float(p.price_usd)
+        self._pool_cache[mint] = (now, None)
         return None
 
     def acceleration(self, mint: str, since_ts: float | None = None) -> float | None:

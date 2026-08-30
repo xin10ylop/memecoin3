@@ -127,17 +127,21 @@ def test_unroutable_token_with_a_live_pool_is_not_marked_to_zero():
 
     from memebot.live.scalper import RealtimeScalper
     obj = RealtimeScalper.__new__(RealtimeScalper)
+    obj._pool_cache = {}
 
     obj.gt = Fake([pool(26_000, 5_000, 9.17e-05)])
     assert obj.pool_alive_price("m") == 9.17e-05          # alive -> use it
 
+    obj._pool_cache.clear()
     obj.gt = Fake([pool(0.0, 0.0, 4.6e-08)])
     assert obj.pool_alive_price("m") is None              # dead -> real loss
 
     # A quiet pool with real reserves is still sellable: an AMM fills a
     # \$10 order whether or not anyone traded in the last five minutes.
+    obj._pool_cache.clear()
     obj.gt = Fake([pool(23_670, 0.0, 1.53e-05)])
     assert obj.pool_alive_price("m") == 1.53e-05
 
+    obj._pool_cache.clear()
     obj.gt = Fake([pool(200, 0.0, 1.0e-05)])              # too thin to trust
     assert obj.pool_alive_price("m") is None

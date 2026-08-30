@@ -51,9 +51,16 @@ def main() -> int:
     hel = Helius()
     rows = []
     for p in cands:
-        bars = gt.ohlcv(p.address, limit=3)
-        if len(bars) < 2:
+        # GT returns the MOST RECENT `limit` bars, not the first ones. A
+        # limit of 3 on a five-minute-old pool yields minutes 3-5, so the
+        # "first two minutes" measured that way are not the first two
+        # minutes at all. Fetch a wide window and take the earliest bars,
+        # then require them to actually sit at the pool's creation.
+        bars = gt.ohlcv(p.address, limit=200)
+        if len(bars) < 2 or p.created_ts is None:
             continue
+        if bars[0][0] > p.created_ts + 120:
+            continue                      # window does not reach the launch
         v = np.array([bars[0][5], bars[1][5]], dtype=float)
         if v[0] <= 0:
             continue
@@ -62,8 +69,9 @@ def main() -> int:
         if not mint:
             continue
         # the live feature, measured the way the scalper measures it
-        a = rpc.activity_per_minute(mint, limit=1000)
-        hv = hel.swap_volume_per_minute(mint)
+        a = rpc.activity_per_minute(mint, limit=1000,
+                                    since_ts=p.created_ts)
+        hv = hel.swap_volume_per_minute(mint, since_ts=p.created_ts)
         if len(a) < 2 or a[0] <= 0 or len(hv) < 2 or hv[0] <= 0:
             continue
         rows.append({"pool": p.address, "vol_ratio": vol_ratio,

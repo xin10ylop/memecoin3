@@ -26,14 +26,35 @@ DEAD_RECOVERY, COST = 0.10, 0.016
 
 
 def load_all(db) -> dict:
-    pools = pd.read_sql_query("SELECT pool_address FROM retro_harvest", db)
+    """Every harvested pool whose bars demonstrably start at its creation.
+
+    GT returns the most recent `limit` bars, so a pool that keeps trading
+    for days can outrun the window and lose its opening minutes. Then
+    b.iloc[:2] is not the first two minutes at all, and every entry feature
+    built on it describes some arbitrary later moment. The failure is
+    outcome-correlated -- short-lived pools keep their whole history while
+    survivors are the ones that lose their start -- so it flatters exactly
+    the pools that did well. Measured here at ~1% of the sample, but it is
+    checked rather than assumed.
+    """
+    pools = pd.read_sql_query(
+        """SELECT r.pool_address, p.pool_created_at
+           FROM retro_harvest r JOIN pools p ON p.pool_address = r.pool_address
+           WHERE p.pool_created_at IS NOT NULL""", db)
+    ct = pd.to_datetime(pools.pool_created_at, errors="coerce", utc=True)
+    pools["created"] = (ct - pd.Timestamp("1970-01-01", tz="UTC")
+                        ).dt.total_seconds()
+    pools = pools.dropna(subset=["created"])
     out = {}
-    for pool in pools.pool_address:
+    for _, row in pools.iterrows():
         b = pd.read_sql_query(
             "SELECT ts,h,l,c,vol_usd FROM ohlcv WHERE pool_address=? "
-            "ORDER BY ts", db, params=(pool,))
-        if len(b) >= 2:
-            out[pool] = b
+            "ORDER BY ts", db, params=(row.pool_address,))
+        if len(b) < 2:
+            continue
+        if float(b.ts.iloc[0]) > row.created + 120:
+            continue                      # bars do not reach the launch
+        out[row.pool_address] = b
     return out
 
 

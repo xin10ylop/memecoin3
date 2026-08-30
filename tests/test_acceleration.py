@@ -50,3 +50,13 @@ def test_silent_minute_counts_as_zero_not_missing():
     t = 1_700_000_000
     r = FakeRpc([t, t + 5, t + 125])         # minute 1: 2, minute 2: 0, minute 3: 1
     assert r.activity_per_minute("M") == [2, 0, 1]
+
+
+def test_frenzy_is_rejected_by_the_ceiling():
+    """A 10x second minute must NOT pass: return is non-monotonic in
+    acceleration and the extreme bucket is the worst one."""
+    from memebot.live.scalper import MAX_ACCEL, MIN_ACCEL
+    assert MIN_ACCEL <= 1.0 < MAX_ACCEL
+    for ratio, ok in [(0.5, False), (1.0, True), (2.0, True),
+                      (9.9, True), (10.0, False), (50.0, False)]:
+        assert (MIN_ACCEL <= ratio < MAX_ACCEL) is ok

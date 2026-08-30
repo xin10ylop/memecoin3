@@ -64,6 +64,16 @@ MIN_RANGE = 0.172      # validated threshold: >=17.2% range in the window
 # per trade CI[+6.9%,+70.1%] (n=130), holds up out-of-sample (+19.3% on the
 # later half) and beats a same-size random subset of that period at p=0.012.
 MIN_ACCEL = 1.0        # minute-2 activity must at least match minute-1
+# ...but not by too much. Return is NOT monotonic in acceleration -- rank
+# correlation is -0.17 and the >5x bucket earns +5.2% against +75.8% for
+# 1.5-2.5x. A second minute trading ten times the first is a frenzy at its
+# peak, not demand building, and it is the last buyer who pays for it.
+# Adopted as PROVISIONAL: every ceiling tested (3x, 5x, 10x) beat no
+# ceiling both in and out of sample, so the effect is a plateau rather than
+# a spike at one lucky cut point -- but each OOS floor still spans zero at
+# n<=60. The loosest cut is used deliberately: it excludes only the extreme
+# and adds the fewest degrees of freedom to overfit.
+MAX_ACCEL = 10.0       # above this the launch is a frenzy, not a trend
 MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
                        # Jupiter's batch price call intermittently omits
                        # brand-new mints, so demanding 6 samples was
@@ -203,7 +213,7 @@ class RealtimeScalper:
             accel = self.acceleration(mint) if (
                 n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
             if n < MIN_SAMPLES or rng < MIN_RANGE or accel is None \
-                    or accel < MIN_ACCEL:
+                    or not (MIN_ACCEL <= accel < MAX_ACCEL):
                 log.info("skip %s: range %.1f%% samples %d accel %s "
                          "(need >=%.1f%%, %d, >=%.1f)",
                          mint[:10], rng * 100, n,

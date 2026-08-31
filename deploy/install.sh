@@ -61,6 +61,12 @@ cd "$REPO_DIR" && exec "$REPO_DIR/.venv/bin/python3" scripts/status.py
 STATUS
 chmod +x /usr/local/bin/memebot-status
 
+cat > /usr/local/bin/memebot-audit <<AUDIT
+#!/usr/bin/env bash
+cd "$REPO_DIR" && exec "$REPO_DIR/.venv/bin/python3" scripts/audit_trades.py
+AUDIT
+chmod +x /usr/local/bin/memebot-audit
+
 systemctl daemon-reload
 systemctl enable memebot-scalper memebot-outcomes
 echo

@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -50,11 +51,38 @@ class PortalEvent:
 class PortalLaunchFeed:
     """Graduations to PumpSwap, in real time, for free."""
 
-    def __init__(self, maxlen: int = 2000):
+    # Which PumpPortal stream to subscribe to, and it decides everything.
+    #
+    # subscribeNewToken fires when a coin is CREATED -- its first seconds of
+    # existence. subscribeMigration fires when a coin GRADUATES to a
+    # PumpSwap pool, which happens far later, after the bonding curve
+    # fills.
+    #
+    # The backtest was built on GeckoTerminal new_pools: coins in their
+    # first two minutes. Running it against migrations applied a rule
+    # validated on newborn coins to coins at an entirely different life
+    # stage, and the live data showed it plainly -- of 24 candidates
+    # clearing the range test, only 2 cleared drawdown, with drawdowns of
+    # 0.72, 0.85, 0.98 on ranges of 4x to 47x. Those are coins that spiked
+    # and collapsed inside the two-minute window: the post-migration dump.
+    # The filters were not broken, they were pointed at the wrong animal.
+    METHODS = {"new": "subscribeNewToken", "migration": "subscribeMigration"}
+
+    def __init__(self, maxlen: int = 2000, kind: str | None = None):
         self.events: deque = deque(maxlen=maxlen)
         self._seen: set[str] = set()
         self._running = False
         self.thread_error: BaseException | None = None
+        # Default stays MIGRATION: it is the only population that has
+        # actually produced live trades here -- six of them, zero deaths,
+        # one +108%. Switching to token creations was a hypothesis about
+        # the backtest's population, and swapping a proven feed for an
+        # untested one on a hunch is the same mistake as every other
+        # premature conclusion in this project. The stream is configurable
+        # so the question can be TESTED rather than assumed.
+        self.kind = kind or os.environ.get("MEMEBOT_PORTAL_STREAM",
+                                           "migration")
+        self.method = self.METHODS.get(self.kind, "subscribeNewToken")
 
     async def _run(self) -> None:
         import websockets
@@ -63,8 +91,9 @@ class PortalLaunchFeed:
             try:
                 async with websockets.connect(WS_URL, ping_interval=20,
                                               max_size=None) as ws:
-                    await ws.send(json.dumps({"method": "subscribeMigration"}))
-                    log.info("portal launch feed connected (no credits used)")
+                    await ws.send(json.dumps({"method": self.method}))
+                    log.info("portal launch feed connected: %s "
+                             "(no credits used)", self.method)
                     backoff = 1.0
                     while self._running:
                         msg = json.loads(await ws.recv())

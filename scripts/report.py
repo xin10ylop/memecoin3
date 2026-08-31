@@ -67,12 +67,16 @@ def main() -> int:
     # Only the current feed's candidates are comparable. Rows from the
     # polling feed were observed 4-11 minutes into a launch instead of
     # seconds, so their range and drawdown describe a different animal.
-    where = ("WHERE outcome IS NOT NULL AND (feed IS NULL OR feed = 'portal')"
-             if feeds else "WHERE outcome IS NOT NULL")
+    # Strictly the real-time feed. An earlier version admitted NULL rows
+    # too, which readmitted every poll-era candidate it was meant to
+    # exclude -- the filter looked right and did nothing.
+    has_tagged = any(f == "portal" for f in feeds)
+    where = ("WHERE outcome IS NOT NULL AND feed = 'portal'"
+             if has_tagged else "WHERE outcome IS NOT NULL")
     j = list(d.execute(
         "SELECT range_frac, accel, vol2, buyers_m1, buyers_m2, drawdown, "
         f"drift, outcome FROM candidate_journal {where}"))
-    if len(feeds) > 1:
+    if len(feeds) > 1 and has_tagged:
         print(f"feeds present in the journal: {', '.join(sorted(feeds))} "
               f"-- analysing the real-time feed only, since a launch "
               f"observed minutes late is not the same observation")

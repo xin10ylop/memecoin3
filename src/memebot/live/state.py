@@ -62,6 +62,16 @@ class StateStore:
         self.db = sqlite3.connect(path)
         self.db.executescript(SCHEMA)
         # migrate pre-decimals databases
+        # Rows written before the feed column existed came from the
+        # websocket and polling feeds, and are NOT comparable to real-time
+        # ones. Naming them 'legacy' lets analysis exclude them explicitly;
+        # leaving them NULL made a filter of "NULL or portal" silently
+        # readmit the very rows it was written to keep out.
+        jcols = [r[1] for r in
+                 self.db.execute("PRAGMA table_info(candidate_journal)")]
+        if "feed" in jcols:
+            self.db.execute("UPDATE candidate_journal SET feed = 'legacy' "
+                            "WHERE feed IS NULL")
         cols = [r[1] for r in self.db.execute("PRAGMA table_info(positions)")]
         if "decimals" not in cols:
             self.db.execute("ALTER TABLE positions ADD COLUMN decimals "

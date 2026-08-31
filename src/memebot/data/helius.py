@@ -52,7 +52,7 @@ class Helius:
         return out if isinstance(out, list) else []
 
     def swaps_since(self, address: str, since_ts: float | None = None,
-                    max_pages: int = 12) -> tuple[list, bool]:
+                    max_pages: int = 6) -> tuple[list, bool]:
         """Page back to the launch once, returning (swaps, truncated).
 
         Volume and buyer breadth both need the same transactions, and each

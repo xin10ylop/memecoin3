@@ -228,3 +228,24 @@ def test_a_failed_decision_cannot_become_a_zombie():
     # the flag must be set in finally, so it cannot be skipped or duplicated
     assert body.index("finally:") < body.index("c.decided = True"), \
         "decided must be set in finally, after the attempt"
+
+
+def test_paid_calls_run_only_after_the_free_checks_pass():
+    """Range and drawdown come from prices already collected and cost
+    nothing; acceleration pages a billed API. Evaluating in the wrong order
+    meant paying to reject coins the free checks would reject anyway -- and
+    a websocket firehose plus that ordering burned a million credits."""
+    src = open("src/memebot/live/scalper.py").read()
+    fn = src[src.index("def _decide_one"):src.index("def _enter")]
+    assert fn.index("free_ok = ") < fn.index("self.acceleration("), \
+        "the free checks must be evaluated before the paid call"
+    assert "if free_ok else None" in fn, \
+        "acceleration must be skipped entirely when the free checks fail"
+
+
+def test_default_feed_costs_no_credits():
+    """The websocket streamed every PumpSwap transaction to keep the few
+    that were pool creations. Polling must be the default."""
+    src = open("src/memebot/live/scalper.py").read()
+    assert 'os.environ.get("MEMEBOT_FEED", "poll")' in src
+    assert "PollingLaunchFeed" in src

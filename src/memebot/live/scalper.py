@@ -30,6 +30,7 @@ buy -> trail 30%, hard cap 30 minutes.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -180,7 +181,16 @@ class RealtimeScalper:
         self.risk = RiskManager(cfg)
         self.notify = Notifier(cfg.telegram.enabled)
         self.state = StateStore(cfg.live.state_db)
-        self.feed = RealtimeLaunchFeed()
+        # Discovery source. The websocket streams every PumpSwap
+        # transaction and keeps only pool creations -- millions of billed
+        # messages a day for a few thousand useful ones. Polling is free and
+        # arrives a few minutes later, a trade the wait-time backtest says
+        # costs nothing measurable. Set MEMEBOT_FEED=websocket to override.
+        if os.environ.get("MEMEBOT_FEED", "poll") == "websocket":
+            self.feed = RealtimeLaunchFeed()
+        else:
+            from .pollfeed import PollingLaunchFeed
+            self.feed = PollingLaunchFeed()
         self.is_live = cfg.mode == "live" and live_trading_armed()
         self.executor = PaperExecutor(self.costs)
         if self.is_live:
@@ -238,7 +248,10 @@ class RealtimeScalper:
             if ev.signature in self._seen_sigs:
                 continue
             self._n["events"] += 1
-            mint = self._resolve_mint(ev.signature)
+            # The polling feed carries the mint already; only the websocket
+            # needs a getTransaction to find it, which is another billed
+            # call per launch.
+            mint = getattr(ev, "mint", None) or self._resolve_mint(ev.signature)
             if not mint:
                 self._n["unresolved"] += 1
                 # Do NOT mark it seen. Resolution is an RPC call and a
@@ -310,16 +323,22 @@ class RealtimeScalper:
         self._last_buyers = None
         self._last_drift = None
         self._last_drawdown = None
-        accel = self.acceleration(mint, c.detected_ts) if (
-            n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
-        vol2 = self._last_vol2
+        # Order the checks by COST, not by how they read. Samples, range
+        # and drawdown come from prices already in hand and cost nothing;
+        # acceleration pages a billed API. Running the paid call first meant
+        # paying to evaluate coins the free checks would reject anyway, and
+        # only about one in ten range-qualifiers survives drawdown -- so this
+        # is roughly a 10x cut in paid calls for an identical decision.
         drawdown = c.drawdown()
         self._last_drawdown = drawdown
         self._last_drift = c.drift()
-        ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE and accel is not None
+        free_ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE
+                   and drawdown is not None and drawdown <= MAX_DRAWDOWN)
+        accel = self.acceleration(mint, c.detected_ts) if free_ok else None
+        vol2 = self._last_vol2
+        ok = (free_ok and accel is not None
               and MIN_ACCEL <= accel < MAX_ACCEL
-              and (vol2 is None or vol2 >= MIN_SOL_VOL2)
-              and drawdown is not None and drawdown <= MAX_DRAWDOWN)
+              and (vol2 is None or vol2 >= MIN_SOL_VOL2))
         self._journal(mint, rng, n, accel, ok)
         if not ok:
             log.info("skip %s: range %.1f%% samples %d accel %s "

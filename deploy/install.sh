@@ -12,6 +12,11 @@ python3 -m venv "$REPO_DIR/.venv"
 "$REPO_DIR/.venv/bin/pip" install -q --upgrade pip
 "$REPO_DIR/.venv/bin/pip" install -q -e "$REPO_DIR"
 
+# git does not track empty directories, so a fresh clone has no data/ and
+# the scalper dies on startup with "unable to open database file". Create it
+# before the services are ever started.
+mkdir -p "$REPO_DIR/data"
+
 mkdir -p /etc/memebot
 if [ ! -f /etc/memebot/secrets.env ]; then
   cat > /etc/memebot/secrets.env <<'ENV'

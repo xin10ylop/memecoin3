@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 
@@ -49,6 +50,14 @@ CREATE TABLE IF NOT EXISTS candidate_journal (
 
 class StateStore:
     def __init__(self, path: str):
+        # A fresh checkout has no data/ directory -- git does not track
+        # empty ones -- and sqlite will not create the parent, so the
+        # process died at startup with "unable to open database file".
+        # Belt and braces: the installer makes the directory, and so does
+        # the code, because a deploy should not depend on remembering.
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.executescript(SCHEMA)
         # migrate pre-decimals databases

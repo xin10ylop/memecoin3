@@ -207,3 +207,21 @@ def test_websockets_is_a_declared_dependency():
     """It was imported at runtime but absent from pyproject, so a clean
     install produced a bot that could not see launches."""
     assert "websockets" in open("pyproject.toml").read()
+
+
+def test_a_failed_decision_cannot_become_a_zombie():
+    """decide() used to set c.decided = True before making network calls.
+    A throw then left the candidate marked decided, unjournalled and still
+    in the dict -- never traded, never recorded, never retried. Live
+    measurement: 81 launches detected, 23 evaluated, 58 silently lost."""
+    src = open("src/memebot/live/scalper.py").read()
+    body = src[src.index("def decide(self)"):src.index("def _decide_one")]
+    assert "try:" in body and "except Exception" in body, \
+        "each candidate decision must be individually guarded"
+    assert "self.candidates.pop" in body, \
+        "a failed decision must drop the candidate, not park it forever"
+    assert "_journal" in body, \
+        "a failed decision must still be recorded, or it vanishes"
+    # the flag must be set in finally, so it cannot be skipped or duplicated
+    assert body.index("finally:") < body.index("c.decided = True"), \
+        "decided must be set in finally, after the attempt"

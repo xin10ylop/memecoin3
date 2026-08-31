@@ -256,7 +256,29 @@ class RealtimeScalper:
                 continue
             if c.age < OBS_SEC:
                 continue
-            c.decided = True
+            # Every fallible step below -- acceleration() and _enter() both
+            # make network calls -- used to run AFTER c.decided was set, with
+            # only the outer loop's catch-all beneath them. A throw left the
+            # candidate marked decided, unjournalled and still in the dict:
+            # a zombie, never traded, never recorded, never retried. Live
+            # diagnostics measured the cost: 81 launches detected, 23
+            # evaluated, the other 58 silently gone.
+            # Now a failure is loud, journalled, and drops the candidate
+            # rather than parking it forever.
+            try:
+                self._decide_one(mint, c)
+            except Exception:
+                log.exception("deciding %s failed — dropping it", mint[:10])
+                try:
+                    self._journal(mint, c.range_frac(),
+                                  len([p for p in c.prices if p]), None, False)
+                except Exception:
+                    pass
+                self.candidates.pop(mint, None)
+            finally:
+                c.decided = True
+
+    def _decide_one(self, mint: str, c: "Candidate") -> None:
             rng = c.range_frac()
             n = len([p for p in c.prices if p])
             # Clear per-candidate scratch BEFORE deciding. These are set

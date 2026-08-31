@@ -187,3 +187,23 @@ def test_clean_chart_threshold_rejects_what_the_data_rejected():
     # buckets measured: <10% off the high doubled 34% of the time,
     # 10-30% only 4%. The cut belongs at 10%, not looser.
     assert MAX_DRAWDOWN <= 0.10
+
+
+def test_a_dead_launch_feed_must_not_be_survivable():
+    """The first real deployment ran blind: websockets was missing, the
+    feed thread died at startup, and the scalper heartbeated with
+    equity=100 and zero candidates as though healthy. Looking fine while
+    seeing nothing is worse than crashing."""
+    src = open("src/memebot/live/scalper.py").read()
+    loop = src[src.index("while True:"):]
+    assert "thread_error" in loop, "the run loop must inspect feed health"
+    assert loop.index("thread_error") < loop.index("self.intake()"), \
+        "feed health must be checked BEFORE doing work as if it were fine"
+    assert "SystemExit(1)" in loop, \
+        "a dead feed must exit non-zero so the service manager restarts it"
+
+
+def test_websockets_is_a_declared_dependency():
+    """It was imported at runtime but absent from pyproject, so a clean
+    install produced a bot that could not see launches."""
+    assert "websockets" in open("pyproject.toml").read()

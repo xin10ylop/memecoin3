@@ -52,6 +52,7 @@ class RealtimeLaunchFeed:
         self.events: deque[LaunchEvent] = deque(maxlen=maxlen)
         self._seen: set[str] = set()
         self._running = False
+        self.thread_error: BaseException | None = None
 
     async def _run(self) -> None:
         import websockets
@@ -95,7 +96,17 @@ class RealtimeLaunchFeed:
         def runner():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._run())
+            try:
+                loop.run_until_complete(self._run())
+            except BaseException as e:
+                # A dead feed thread used to leave the scalper heartbeating
+                # happily while seeing nothing -- the worst failure mode
+                # there is, because it looks healthy. Record it so the main
+                # loop can notice and exit for systemd to restart.
+                self.thread_error = e
+                log.error("launch feed thread died: %s: %s",
+                          type(e).__name__, e)
+                raise
 
         t = threading.Thread(target=runner, daemon=True, name="rt-launch-feed")
         t.start()

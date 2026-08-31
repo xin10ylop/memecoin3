@@ -619,6 +619,20 @@ class RealtimeScalper:
         while True:
             try:
                 now = time.time()
+                feed_err = getattr(self.feed, "thread_error", None)
+                if feed_err is not None:
+                    # A dead launch feed means seeing nothing while
+                    # reporting perfect health -- the worst failure mode
+                    # there is, and exactly what happened on the first real
+                    # deployment: websockets was missing, the feed thread
+                    # died on startup, and the scalper heartbeated happily
+                    # with equity=100 and zero candidates. Die instead, and
+                    # let the service manager restart something that works.
+                    log.error("launch feed is dead (%s: %s) — exiting so "
+                              "the service manager restarts it",
+                              type(feed_err).__name__, feed_err)
+                    self.feed.stop()
+                    raise SystemExit(1)
                 if now - last_sample >= POLL_SEC:
                     self.intake()
                     self.sample()

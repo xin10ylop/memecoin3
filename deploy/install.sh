@@ -52,28 +52,7 @@ done
 
 cat > /usr/local/bin/memebot-status <<STATUS
 #!/usr/bin/env bash
-cd "$REPO_DIR"
-"$REPO_DIR/.venv/bin/python3" - <<'PY'
-import sqlite3
-import numpy as np
-d = sqlite3.connect("data/scalp.db")
-rows = list(d.execute("SELECT entry_price, exit_price, pnl_usd FROM trades"))
-if not rows:
-    print("no closed trades yet")
-else:
-    r = np.array([x / e - 1 for e, x, _ in rows])
-    pnl = sum(t[2] for t in rows)
-    print(f"trades   {len(rows)}")
-    print(f"P&L      \${pnl:+.2f}   (equity \${100 + pnl:.2f})")
-    print(f"win rate {(r > 0).mean():.0%}")
-    print(f"2x rate  {(r >= 1).mean():.0%}   (backtest ~28%)")
-    print(f"deaths   {(r <= -0.85).mean():.0%}   (backtest ~19%)")
-    print(f"mean     {r.mean():+.1%}/trade")
-j = d.execute("SELECT COUNT(*) FROM candidate_journal").fetchone()[0]
-o = d.execute("SELECT COUNT(*) FROM candidate_journal "
-              "WHERE outcome IS NOT NULL").fetchone()[0]
-print(f"journal  {j} candidates, {o} with settled outcomes")
-PY
+cd "$REPO_DIR" && exec "$REPO_DIR/.venv/bin/python3" scripts/status.py
 STATUS
 chmod +x /usr/local/bin/memebot-status
 

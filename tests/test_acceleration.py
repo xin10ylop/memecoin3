@@ -305,3 +305,38 @@ def test_code_faults_are_not_swallowed_as_no_opinion():
         "the specific handler must precede the catch-all or it never runs"
     assert "raise" in fn[caught:broad], \
         "a code fault must propagate, not degrade to a missing reading"
+
+
+def test_a_silent_second_minute_is_evidence_not_absence():
+    """A launch that traded hard in minute one and went quiet in minute two
+    used to yield a single bucket -- no ratio, so 'no opinion' and a skip.
+    The honest reading is a ratio of zero: every buyer left."""
+    from memebot.data.helius import Helius
+
+    t = 1_700_000_000
+    def swap(ts, lamports):
+        return {"type": "SWAP", "timestamp": ts,
+                "nativeTransfers": [{"amount": lamports}]}
+
+    busy_then_silent = [swap(t + 5, 1_000_000), swap(t + 30, 2_000_000)]
+    v = Helius.volume_buckets(busy_then_silent, anchor_ts=t, min_buckets=2)
+    assert len(v) == 2, "the silent minute must still be a bucket"
+    assert v[1] == 0.0
+    assert v[1] / v[0] == 0.0        # decisively decelerating
+
+    # anchoring matters: without it the window starts at the first swap
+    unanchored = Helius.volume_buckets(busy_then_silent)
+    assert len(unanchored) == 1, "this was the bug: one bucket, no ratio"
+
+
+def test_swaps_before_the_window_are_excluded():
+    """Detection anchors minute one. Bonding-curve trades from before the
+    migration belong to a different question."""
+    from memebot.data.helius import Helius
+    t = 1_700_000_000
+    swaps = [{"type": "SWAP", "timestamp": t - 300,
+              "nativeTransfers": [{"amount": 9_000_000}]},
+             {"type": "SWAP", "timestamp": t + 10,
+              "nativeTransfers": [{"amount": 1_000_000}]}]
+    v = Helius.volume_buckets(swaps, anchor_ts=t, min_buckets=2)
+    assert v[0] == 0.001, "pre-window volume must not leak into minute one"

@@ -643,9 +643,11 @@ class RealtimeScalper:
                 # aged out of the intake window unseen.
                 swaps, truncated = self.helius.swaps_since(mint,
                                                            since_ts=since_ts)
-                v = [] if truncated else self.helius.volume_buckets(swaps)
+                v = [] if truncated else self.helius.volume_buckets(
+                    swaps, anchor_ts=since_ts, min_buckets=2)
                 if truncated and swaps:
-                    vb = self.helius.volume_buckets(swaps)
+                    vb = self.helius.volume_buckets(
+                        swaps, anchor_ts=since_ts, min_buckets=2)
                     # a truncated window overstates the ratio, so it can
                     # still REJECT, never accept (see helius.py)
                     if len(vb) >= 2 and vb[0] > 0 and vb[1] / vb[0] < 1.0:
@@ -677,7 +679,8 @@ class RealtimeScalper:
                 # shipped this morning. Tomorrow's journal decides whether
                 # it earns a place in the rule.
                 try:
-                    who = self.helius.buyer_buckets(swaps, mint)
+                    who = self.helius.buyer_buckets(
+                        swaps, mint, anchor_ts=since_ts, min_buckets=2)
                     self._last_buyers = ((who[0], who[1])
                                          if len(who) >= 2 else None)
                 except Exception:

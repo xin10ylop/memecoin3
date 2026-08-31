@@ -109,33 +109,59 @@ class Helius:
         return swaps, truncated
 
     @staticmethod
-    def volume_buckets(swaps: list) -> list[float]:
-        """SOL per minute from pre-fetched swaps, oldest minute first."""
+    def volume_buckets(swaps: list, anchor_ts: float | None = None,
+                       min_buckets: int = 0) -> list[float]:
+        """SOL per minute, oldest minute first.
+
+        anchor_ts fixes where minute one BEGINS. Without it the first bucket
+        starts at whichever swap happened to be fetched first, which is not
+        the same window the backtest measured: bars are fixed minute
+        windows, and a minute with no trades is zero volume, not absent
+        data.
+
+        That distinction decided real trades. A launch that traded hard in
+        its first minute and went silent in its second returned a SINGLE
+        bucket, so the ratio could not be computed and the candidate was
+        skipped as "no opinion" -- when the honest reading is a ratio of
+        zero: all the buyers left. Anchoring on detection and padding to
+        min_buckets turns that silence back into the evidence it is.
+        """
         if not swaps:
             return []
-        t0 = min(t["timestamp"] for t in swaps)
+        times = [t["timestamp"] for t in swaps]
+        t0 = anchor_ts if anchor_ts is not None else min(times)
         buckets: dict[int, float] = {}
         for t in swaps:
+            idx = int((t["timestamp"] - t0) // 60)
+            if idx < 0:
+                continue            # predates the window we are measuring
             lamports = max((n.get("amount") or 0)
                            for n in (t.get("nativeTransfers") or [])) \
                 if t.get("nativeTransfers") else 0
-            idx = int((t["timestamp"] - t0) // 60)
             buckets[idx] = buckets.get(idx, 0.0) + lamports / 1e9
-        return [buckets.get(i, 0.0) for i in range(max(buckets) + 1)]
+        high = max(max(buckets) + 1 if buckets else 0, min_buckets)
+        return [buckets.get(i, 0.0) for i in range(high)]
 
     @staticmethod
-    def buyer_buckets(swaps: list, mint: str) -> list[int]:
-        """Distinct buyer wallets per minute from pre-fetched swaps."""
+    def buyer_buckets(swaps: list, mint: str,
+                      anchor_ts: float | None = None,
+                      min_buckets: int = 0) -> list[int]:
+        """Distinct buyer wallets per minute, on the same fixed windows."""
         if not swaps:
             return []
-        t0 = min(t["timestamp"] for t in swaps)
+        times = [t["timestamp"] for t in swaps]
+        t0 = anchor_ts if anchor_ts is not None else min(times)
         buckets: dict[int, set] = {}
         for t in swaps:
-            who = buckets.setdefault(int((t["timestamp"] - t0) // 60), set())
+            idx = int((t["timestamp"] - t0) // 60)
+            if idx < 0:
+                continue
+            who = buckets.setdefault(idx, set())
             for tr in (t.get("tokenTransfers") or []):
                 if tr.get("mint") == mint and tr.get("toUserAccount"):
                     who.add(tr["toUserAccount"])
-        return [len(buckets.get(i, set())) for i in range(max(buckets) + 1)]
+        high = max(max(buckets) + 1 if buckets else 0, min_buckets)
+        return [len(buckets.get(i, set())) for i in range(high)]
 
     def swap_volume_per_minute(self, address: str,
                                since_ts: float | None = None,

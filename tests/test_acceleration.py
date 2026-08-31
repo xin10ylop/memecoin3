@@ -261,3 +261,30 @@ def test_billed_calls_are_hard_capped():
     assert allowed == MAX_CALLS_PER_HOUR
     # and refusing must yield NO data rather than partial data
     assert h.transactions("anymint") == []
+
+
+def test_journal_schema_migrates_on_an_existing_database():
+    """A column added to CREATE TABLE does nothing for databases that
+    already exist. Shipping `feed` without an ALTER made every journal
+    INSERT fail against a live deployment, silently, for an hour."""
+    import sqlite3
+    import tempfile
+    import os
+    from memebot.live.state import StateStore
+
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "old.db")
+    # a database from before any of these columns existed
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE candidate_journal (mint TEXT PRIMARY KEY, "
+                "ts REAL, range_frac REAL, samples INTEGER, accel REAL, "
+                "taken INTEGER)")
+    con.commit()
+    con.close()
+
+    StateStore(path)          # opening it must migrate
+    con = sqlite3.connect(path)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(candidate_journal)")}
+    for needed in ("vol2", "buyers_m1", "buyers_m2", "outcome", "outcome_ts",
+                   "drawdown", "drift", "feed"):
+        assert needed in cols, f"{needed} was not migrated in"

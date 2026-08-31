@@ -67,11 +67,24 @@ class StateStore:
         # ones. Naming them 'legacy' lets analysis exclude them explicitly;
         # leaving them NULL made a filter of "NULL or portal" silently
         # readmit the very rows it was written to keep out.
+        # Add any journal column this build expects but an existing
+        # database lacks. The previous attempt put `feed` in CREATE TABLE
+        # and wrote the backfill, but never ALTERed an existing table -- so
+        # on every already-running deployment the INSERT referenced a column
+        # that did not exist, failed, and was swallowed by the journal's own
+        # try/except. The bot kept trading while recording NOTHING, and the
+        # only symptom was a candidate count that quietly stopped moving.
         jcols = [r[1] for r in
                  self.db.execute("PRAGMA table_info(candidate_journal)")]
-        if "feed" in jcols:
-            self.db.execute("UPDATE candidate_journal SET feed = 'legacy' "
-                            "WHERE feed IS NULL")
+        for col, decl in (("vol2", "REAL"), ("buyers_m1", "INTEGER"),
+                          ("buyers_m2", "INTEGER"), ("outcome", "REAL"),
+                          ("outcome_ts", "REAL"), ("drawdown", "REAL"),
+                          ("drift", "REAL"), ("feed", "TEXT")):
+            if col not in jcols:
+                self.db.execute(
+                    f"ALTER TABLE candidate_journal ADD COLUMN {col} {decl}")
+        self.db.execute("UPDATE candidate_journal SET feed = 'legacy' "
+                        "WHERE feed IS NULL")
         cols = [r[1] for r in self.db.execute("PRAGMA table_info(positions)")]
         if "decimals" not in cols:
             self.db.execute("ALTER TABLE positions ADD COLUMN decimals "

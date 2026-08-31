@@ -581,8 +581,13 @@ class RealtimeScalper:
                  self._last_buyers[1] if self._last_buyers else None,
                  self._last_drawdown, self._last_drift, self._feed_kind))
             self.state.db.commit()
-        except Exception as e:                       # journalling is never
-            log.debug("journal write failed: %s", e)  # allowed to block a trade
+        except Exception as e:
+            # Never block a trade on journalling -- but never hide it
+            # either. A swallowed schema error stopped every candidate
+            # being recorded while the bot went on trading, and the only
+            # visible symptom was a count that stopped moving.
+            log.error("journal write FAILED (%s: %s) — the shadow dataset "
+                      "is not being recorded", type(e).__name__, e)
 
     def pool_alive_price(self, mint: str) -> float | None:
         """Current price from the token's best pool, if that pool is

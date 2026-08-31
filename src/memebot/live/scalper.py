@@ -186,7 +186,14 @@ class RealtimeScalper:
         # messages a day for a few thousand useful ones. Polling is free and
         # arrives a few minutes later, a trade the wait-time backtest says
         # costs nothing measurable. Set MEMEBOT_FEED=websocket to override.
+        # Recorded on every journal row. Three feeds have been used and
+        # they observe a launch at wildly different ages -- 13 seconds for
+        # the websocket, 4-11 MINUTES for polling. A coin's range and
+        # drawdown mean different things at those ages, so mixing them in
+        # one dataset silently compares incomparable things. The shadow
+        # test must be able to separate them.
         feed_kind = os.environ.get("MEMEBOT_FEED", "portal")
+        self._feed_kind = feed_kind
         if feed_kind == "websocket":
             self.feed = RealtimeLaunchFeed()          # instant, expensive
         elif feed_kind == "poll":
@@ -565,14 +572,14 @@ class RealtimeScalper:
             self.state.db.execute(
                 "INSERT OR REPLACE INTO candidate_journal "
                 "(mint, ts, range_frac, samples, accel, taken, vol2, "
-                "buyers_m1, buyers_m2, drawdown, drift) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "buyers_m1, buyers_m2, drawdown, drift, feed) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (mint, time.time(), float(rng), int(n),
                  float(accel) if accel is not None else None, int(taken),
                  self._last_vol2,
                  self._last_buyers[0] if self._last_buyers else None,
                  self._last_buyers[1] if self._last_buyers else None,
-                 self._last_drawdown, self._last_drift))
+                 self._last_drawdown, self._last_drift, self._feed_kind))
             self.state.db.commit()
         except Exception as e:                       # journalling is never
             log.debug("journal write failed: %s", e)  # allowed to block a trade

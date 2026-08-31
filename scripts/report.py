@@ -31,9 +31,11 @@ def main() -> int:
     else:
         r = np.array([x / e - 1 for e, x, _, _, _ in rows if e > 0])
         pnl = sum(t[2] for t in rows)
+        # Span of the trades themselves, NOT a throughput rate: six trades
+        # clustered in twelve minutes once printed "25.7/hour", which is
+        # not a fact about anything.
         span = (rows[-1][4] - rows[0][4]) / 3600 if len(rows) > 1 else 0
-        print(f"trades {len(rows)}  over {span:.1f}h  "
-              f"({len(rows)/max(span,1e-9):.1f}/hour)")
+        print(f"trades {len(rows)}  (first to last: {span:.1f}h)")
         print(f"P&L    ${pnl:+.2f}   equity ${100+pnl:.2f}")
         print(f"{'':10}{'live':>8} {'expected':>10}")
         for lab, val, exp in [("win rate", (r > 0).mean(), EXPECT["win"]),
@@ -56,10 +58,25 @@ def main() -> int:
     print("=" * 62)
     print("SHADOW TEST — what OTHER rules would have done, same coins")
     print("=" * 62)
+    try:
+        feeds = [r[0] or "unknown" for r in d.execute(
+            "SELECT DISTINCT feed FROM candidate_journal "
+            "WHERE outcome IS NOT NULL")]
+    except sqlite3.Error:
+        feeds = []
+    # Only the current feed's candidates are comparable. Rows from the
+    # polling feed were observed 4-11 minutes into a launch instead of
+    # seconds, so their range and drawdown describe a different animal.
+    where = ("WHERE outcome IS NOT NULL AND (feed IS NULL OR feed = 'portal')"
+             if feeds else "WHERE outcome IS NOT NULL")
     j = list(d.execute(
         "SELECT range_frac, accel, vol2, buyers_m1, buyers_m2, drawdown, "
-        "drift, outcome FROM candidate_journal WHERE outcome IS NOT NULL"))
-    print(f"candidates with a settled outcome: {len(j)}")
+        f"drift, outcome FROM candidate_journal {where}"))
+    if len(feeds) > 1:
+        print(f"feeds present in the journal: {', '.join(sorted(feeds))} "
+              f"-- analysing the real-time feed only, since a launch "
+              f"observed minutes late is not the same observation")
+    print(f"comparable candidates with a settled outcome: {len(j)}")
     if len(j) < 20:
         print("(need ~20+ before any comparison means anything)")
     else:

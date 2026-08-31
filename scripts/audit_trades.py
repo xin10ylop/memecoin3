@@ -28,13 +28,19 @@ from memebot.data.gt import GeckoTerminal, sanitize_bars  # noqa: E402
 
 DB = sys.argv[1] if len(sys.argv) > 1 else "data/scalp.db"
 DEAD_RESERVE = 1000.0     # below this a pool cannot absorb our clip
+# The aggregator rate-limits hard, and a full audit of every trade ever
+# made grew slow enough to be abandoned half-way -- an audit nobody waits
+# for is an audit nobody runs. Newest trades first, bounded by default.
+MAX_TRADES = int(sys.argv[2]) if len(sys.argv) > 2 else 25
 
 
 def main() -> int:
     d = sqlite3.connect(DB)
     trades = list(d.execute(
         "SELECT symbol, mint, entry_price, exit_price, pnl_usd, reason, "
-        "entry_ts, exit_ts FROM trades ORDER BY exit_ts"))
+        "entry_ts, exit_ts FROM trades ORDER BY exit_ts DESC "
+        f"LIMIT {MAX_TRADES}"))
+    trades = trades[::-1]
     if not trades:
         print("no closed trades to audit")
         return 0

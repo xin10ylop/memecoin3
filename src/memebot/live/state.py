@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS candidate_journal (
     outcome REAL,
     outcome_ts REAL,
     drawdown REAL,
-    drift REAL
+    drift REAL,
+    feed TEXT
 );
 """
 

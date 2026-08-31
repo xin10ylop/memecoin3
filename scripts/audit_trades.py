@@ -41,7 +41,7 @@ def main() -> int:
     gt = GeckoTerminal()
     print(f"auditing {len(trades)} trades against live pool data\n")
     print(f"{'trade':<8} {'pnl':>8} {'ret':>8} {'reason':<11} {'verdict'}")
-    suspect = 0
+    suspect = checked = unknown = 0
     for sym, mint, ent, ex, pnl, reason, ets, xts in trades:
         ret = (ex / ent - 1) if ent else float("nan")
         try:
@@ -49,10 +49,12 @@ def main() -> int:
         except Exception as e:
             print(f"{sym:<8} {pnl:>+8.2f} {ret:>+8.0%} {reason:<11} "
                   f"UNKNOWN (lookup failed: {e})")
+            unknown += 1
             continue
         if not pools:
             print(f"{sym:<8} {pnl:>+8.2f} {ret:>+8.0%} {reason:<11} "
                   f"UNKNOWN (no pools found)")
+            unknown += 1
             continue
         top = pools[0]
         reserve = top.reserve_usd or 0.0
@@ -86,16 +88,27 @@ def main() -> int:
                 else:
                     detail = f"exit inside traded range, peak {hi/ent:.1f}x"
         suspect += verdict == "SUSPECT"
+        unknown += verdict == "unverified"
+        checked += verdict == "ok"
         print(f"{sym:<8} {pnl:>+8.2f} {ret:>+8.0%} {reason:<11} "
               f"{verdict:<11} {detail}")
 
     print()
+    # Say exactly what was and was not established. An earlier version
+    # counted only SUSPECT and then announced "all trades verified" while
+    # a trade sat right above it marked UNKNOWN -- the precise kind of
+    # quiet overclaiming this tool exists to catch.
+    print(f"verified {checked}/{len(trades)}   suspect {suspect}   "
+          f"could not check {unknown}")
     if suspect:
-        print(f"{suspect} SUSPECT trade(s) — the ledger may be misreporting "
-              f"these. Paste this output for a closer look.")
+        print(f"-> {suspect} trade(s) look misreported by the ledger. "
+              f"Paste this output for a closer look.")
+    elif unknown:
+        print(f"-> nothing looks misreported, but {unknown} trade(s) could "
+              f"not be checked (pool data gone). Those are unproven, not "
+              f"confirmed good.")
     else:
-        print("all trades verified against live pool data: the ledger "
-              "matches what the market actually did.")
+        print("-> every trade matches what the market actually did.")
     return 0
 
 

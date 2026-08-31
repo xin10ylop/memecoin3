@@ -288,3 +288,20 @@ def test_journal_schema_migrates_on_an_existing_database():
     for needed in ("vol2", "buyers_m1", "buyers_m2", "outcome", "outcome_ts",
                    "drawdown", "drift", "feed"):
         assert needed in cols, f"{needed} was not migrated in"
+
+
+def test_code_faults_are_not_swallowed_as_no_opinion():
+    """A stale deploy left helius.swaps_since missing. Every call raised
+    AttributeError, the broad handler turned it into None, and 330
+    candidates were skipped in a row while every diagnostic reported
+    healthy -- because each measured only its own layer."""
+    src = open("src/memebot/live/scalper.py").read()
+    fn = src[src.index("def acceleration"):src.index("def quote_buy_price")]
+    assert "except (AttributeError, TypeError, NameError)" in fn, \
+        "programming errors must be caught separately from network errors"
+    caught = fn.index("except (AttributeError")
+    broad = fn.index("except Exception")
+    assert caught < broad, \
+        "the specific handler must precede the catch-all or it never runs"
+    assert "raise" in fn[caught:broad], \
+        "a code fault must propagate, not degrade to a missing reading"

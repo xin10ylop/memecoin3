@@ -650,6 +650,22 @@ class RealtimeScalper:
                     # still REJECT, never accept (see helius.py)
                     if len(vb) >= 2 and vb[0] > 0 and vb[1] / vb[0] < 1.0:
                         v = vb
+            except (AttributeError, TypeError, NameError) as e:
+                # A bug in our own code, not a market condition. A broken
+                # deploy left swaps_since absent from the helius module;
+                # every call raised AttributeError, this handler turned it
+                # into "no opinion", and the bot skipped 330 consecutive
+                # candidates while the funnel reported 95% healthy. Six
+                # hours went to hunting a strategy problem that was a
+                # missing method. Crash instead: a restart loop is noticed,
+                # a silent None is not.
+                log.error("acceleration is BROKEN (%s: %s) — a code or "
+                          "deploy fault, not a market condition. If the "
+                          "attribute is missing, the deployed "
+                          "src/memebot/data package is stale: re-extract "
+                          "WITHOUT --exclude=data",
+                          type(e).__name__, e)
+                raise
             except Exception as e:
                 log.warning("volume lookup failed for %s: %s", mint[:10], e)
                 v = []

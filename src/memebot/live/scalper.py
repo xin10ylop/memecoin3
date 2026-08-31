@@ -186,11 +186,15 @@ class RealtimeScalper:
         # messages a day for a few thousand useful ones. Polling is free and
         # arrives a few minutes later, a trade the wait-time backtest says
         # costs nothing measurable. Set MEMEBOT_FEED=websocket to override.
-        if os.environ.get("MEMEBOT_FEED", "poll") == "websocket":
-            self.feed = RealtimeLaunchFeed()
-        else:
-            from .pollfeed import PollingLaunchFeed
+        feed_kind = os.environ.get("MEMEBOT_FEED", "portal")
+        if feed_kind == "websocket":
+            self.feed = RealtimeLaunchFeed()          # instant, expensive
+        elif feed_kind == "poll":
+            from .pollfeed import PollingLaunchFeed   # free, far too late
             self.feed = PollingLaunchFeed()
+        else:
+            from .portalfeed import PortalLaunchFeed  # instant AND free
+            self.feed = PortalLaunchFeed()
         self.is_live = cfg.mode == "live" and live_trading_armed()
         self.executor = PaperExecutor(self.costs)
         if self.is_live:

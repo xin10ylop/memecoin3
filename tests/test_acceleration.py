@@ -247,8 +247,8 @@ def test_default_feed_costs_no_credits():
     """The websocket streamed every PumpSwap transaction to keep the few
     that were pool creations. Polling must be the default."""
     src = open("src/memebot/live/scalper.py").read()
-    assert 'os.environ.get("MEMEBOT_FEED", "poll")' in src
-    assert "PollingLaunchFeed" in src
+    assert 'os.environ.get("MEMEBOT_FEED", "portal")' in src
+    assert "PortalLaunchFeed" in src
 
 
 def test_billed_calls_are_hard_capped():

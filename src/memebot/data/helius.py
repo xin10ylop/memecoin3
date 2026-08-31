@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import re
 
 from .http import HttpClient
@@ -31,10 +32,39 @@ def api_key_from_rpc_url(url: str | None = None) -> str | None:
     return m.group(1) if m else None
 
 
+# A hard ceiling on billed calls, enforced here rather than trusted to
+# callers. A websocket firehose consumed a million credits in under a day
+# and nothing in the code objected, because nothing was counting. Expected
+# steady-state use is roughly 20 calls an hour, so this leaves ~10x headroom
+# and still bounds a runaway to a few thousand a day instead of millions.
+MAX_CALLS_PER_HOUR = int(os.environ.get("MEMEBOT_HELIUS_HOURLY_CAP", "200"))
+
+
 class Helius:
     def __init__(self, api_key: str | None = None, per_min: float = 120.0):
         self.key = api_key or api_key_from_rpc_url()
         self.http = HttpClient(per_min=per_min)
+        self._calls: list[float] = []
+        self._warned = False
+
+    def _budget_ok(self) -> bool:
+        """False once the hourly cap is spent, so a bug cannot bankrupt the
+        key. Refusing to answer is always safer than answering expensively:
+        a missing acceleration reading skips a candidate, it never invents
+        one."""
+        now = time.time()
+        self._calls = [t for t in self._calls if now - t < 3600]
+        if len(self._calls) >= MAX_CALLS_PER_HOUR:
+            if not self._warned:
+                log.error("Helius hourly cap reached (%d calls) — skipping "
+                          "paid lookups until the window clears. Raise "
+                          "MEMEBOT_HELIUS_HOURLY_CAP only if this is "
+                          "expected.", MAX_CALLS_PER_HOUR)
+                self._warned = True
+            return False
+        self._warned = False
+        self._calls.append(now)
+        return True
 
     @property
     def available(self) -> bool:
@@ -42,7 +72,7 @@ class Helius:
 
     def transactions(self, address: str, limit: int = 100,
                      before: str | None = None) -> list:
-        if not self.key:
+        if not self.key or not self._budget_ok():
             return []
         params = {"api-key": self.key, "limit": int(limit)}
         if before:

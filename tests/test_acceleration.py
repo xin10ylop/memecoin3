@@ -249,3 +249,15 @@ def test_default_feed_costs_no_credits():
     src = open("src/memebot/live/scalper.py").read()
     assert 'os.environ.get("MEMEBOT_FEED", "poll")' in src
     assert "PollingLaunchFeed" in src
+
+
+def test_billed_calls_are_hard_capped():
+    """A firehose spent a million credits in under a day and nothing in the
+    code objected, because nothing counted. The ceiling is enforced in the
+    client so no caller can bypass it."""
+    from memebot.data.helius import MAX_CALLS_PER_HOUR, Helius
+    h = Helius(api_key="x")
+    allowed = sum(1 for _ in range(MAX_CALLS_PER_HOUR + 25) if h._budget_ok())
+    assert allowed == MAX_CALLS_PER_HOUR
+    # and refusing must yield NO data rather than partial data
+    assert h.transactions("anymint") == []

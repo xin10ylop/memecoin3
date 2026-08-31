@@ -50,6 +50,16 @@ def load_all(db) -> dict:
         b = pd.read_sql_query(
             "SELECT ts,h,l,c,vol_usd FROM ohlcv WHERE pool_address=? "
             "ORDER BY ts", db, params=(row.pool_address,))
+        # Drop impossible prints before anything reads them. 0.12% of bars
+        # -- but touching 10.7% of POOLS -- carry a high/low ratio above
+        # 100x, some above 500 trillion. Range reads the low, drawdown
+        # reads the high, and the trail arms on the high, so one bad print
+        # corrupts all three at once. A bar is judged against ITSELF, so a
+        # genuine 50x minute survives.
+        if len(b) >= 1:
+            keep = (b.h > 0) & (b.l > 0) & (b.h / b.l <= 100) & \
+                   (b.c > 0) & (b.c >= b.l) & (b.c <= b.h)
+            b = b[keep].reset_index(drop=True)
         if len(b) < 2:
             continue
         if float(b.ts.iloc[0]) > row.created + 120:

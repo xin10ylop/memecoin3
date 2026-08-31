@@ -22,7 +22,7 @@ import sys
 import time
 
 sys.path.insert(0, "src")
-from memebot.data.gt import GeckoTerminal  # noqa: E402
+from memebot.data.gt import GeckoTerminal, sanitize_bars  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -76,7 +76,7 @@ def main() -> int:
                 pools = gt.token_pools(mint)
                 if not pools:
                     continue
-                bars = gt.ohlcv(pools[0].address, limit=60)
+                bars = sanitize_bars(gt.ohlcv(pools[0].address, limit=60))
                 ret = outcome_from_bars(bars)
                 if ret is None:
                     continue

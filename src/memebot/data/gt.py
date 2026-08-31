@@ -149,3 +149,35 @@ class GeckoTerminal:
         """
         pools = self._pools_call(f"/networks/solana/tokens/{mint}/pools")
         return sorted(pools, key=lambda p: p.reserve_usd or 0.0, reverse=True)
+
+
+def sanitize_bars(bars: list, max_hl_ratio: float = 100.0) -> list:
+    """Drop bars carrying impossible prints.
+
+    A real pool cannot trade across a 130,000,000x range inside one minute,
+    but the feed occasionally reports it: one token trading at 7.7e-06
+    printed a high AND close of 1.014e+03 while its low stayed at 7.688e-06.
+    Left in, that single bar valued a position at +11,699,120,670% and
+    poisoned every mean computed over the sample containing it.
+
+    A bar is rejected when its own high/low ratio is impossible. Judging a
+    bar against ITSELF rather than against its neighbours matters: a genuine
+    launch really can move 50x in a minute, and a neighbour-based rule would
+    throw away exactly the winners this strategy exists to catch.
+    """
+    out = []
+    for b in bars:
+        if not isinstance(b, list) or len(b) < 6:
+            continue
+        try:
+            o, h, low, c = float(b[1]), float(b[2]), float(b[3]), float(b[4])
+        except (TypeError, ValueError):
+            continue
+        if not all(x > 0 for x in (o, h, low, c)):
+            continue
+        if h / low > max_hl_ratio:
+            continue
+        if not (low <= o <= h and low <= c <= h):
+            continue                      # OHLC that does not bracket
+        out.append(b)
+    return out

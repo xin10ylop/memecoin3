@@ -279,40 +279,40 @@ class RealtimeScalper:
                 c.decided = True
 
     def _decide_one(self, mint: str, c: "Candidate") -> None:
-            rng = c.range_frac()
-            n = len([p for p in c.prices if p])
-            # Clear per-candidate scratch BEFORE deciding. These are set
-            # inside acceleration(), which only runs when range and sample
-            # checks pass -- so without this reset a candidate that fails
-            # range is journalled with the PREVIOUS coin's volume and buyer
-            # counts. That would quietly poison the very dataset being
-            # built to decide whether breadth belongs in the rule.
-            self._last_vol2 = None
-            self._last_buyers = None
-            self._last_drift = None
-            self._last_drawdown = None
-            accel = self.acceleration(mint, c.detected_ts) if (
-                n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
-            vol2 = self._last_vol2
-            drawdown = c.drawdown()
-            self._last_drawdown = drawdown
-            self._last_drift = c.drift()
-            ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE and accel is not None
-                  and MIN_ACCEL <= accel < MAX_ACCEL
-                  and (vol2 is None or vol2 >= MIN_SOL_VOL2)
-                  and drawdown is not None and drawdown <= MAX_DRAWDOWN)
-            self._journal(mint, rng, n, accel, ok)
-            if not ok:
-                log.info("skip %s: range %.1f%% samples %d accel %s "
-                         "drawdown %s (need >=%.1f%%, %d, >=%.1f, <=%.0f%%)",
-                         mint[:10], rng * 100, n,
-                         f"{accel:.2f}" if accel is not None else "n/a",
-                         f"{drawdown:.0%}" if drawdown is not None else "n/a",
-                         MIN_RANGE * 100, MIN_SAMPLES, MIN_ACCEL,
-                         MAX_DRAWDOWN * 100)
-                self.candidates.pop(mint, None)
-                continue
-            self._enter(mint, c)
+        rng = c.range_frac()
+        n = len([p for p in c.prices if p])
+        # Clear per-candidate scratch BEFORE deciding. These are set
+        # inside acceleration(), which only runs when range and sample
+        # checks pass -- so without this reset a candidate that fails
+        # range is journalled with the PREVIOUS coin's volume and buyer
+        # counts. That would quietly poison the very dataset being
+        # built to decide whether breadth belongs in the rule.
+        self._last_vol2 = None
+        self._last_buyers = None
+        self._last_drift = None
+        self._last_drawdown = None
+        accel = self.acceleration(mint, c.detected_ts) if (
+            n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
+        vol2 = self._last_vol2
+        drawdown = c.drawdown()
+        self._last_drawdown = drawdown
+        self._last_drift = c.drift()
+        ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE and accel is not None
+              and MIN_ACCEL <= accel < MAX_ACCEL
+              and (vol2 is None or vol2 >= MIN_SOL_VOL2)
+              and drawdown is not None and drawdown <= MAX_DRAWDOWN)
+        self._journal(mint, rng, n, accel, ok)
+        if not ok:
+            log.info("skip %s: range %.1f%% samples %d accel %s "
+                     "drawdown %s (need >=%.1f%%, %d, >=%.1f, <=%.0f%%)",
+                     mint[:10], rng * 100, n,
+                     f"{accel:.2f}" if accel is not None else "n/a",
+                     f"{drawdown:.0%}" if drawdown is not None else "n/a",
+                     MIN_RANGE * 100, MIN_SAMPLES, MIN_ACCEL,
+                     MAX_DRAWDOWN * 100)
+            self.candidates.pop(mint, None)
+            return
+        self._enter(mint, c)
 
     def _enter(self, mint: str, c: Candidate) -> None:
         now = time.time()

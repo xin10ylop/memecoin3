@@ -153,7 +153,10 @@ def test_candidate_scratch_does_not_leak_between_coins():
     previous coin's numbers."""
     import re
     src = open("src/memebot/live/scalper.py").read()
-    body = src[src.index("rng = c.range_frac()"):src.index("self._journal(")]
+    # the decision body now lives in _decide_one, extracted so each
+    # candidate can be guarded individually
+    fn = src[src.index("def _decide_one"):src.index("def _enter")]
+    body = fn[:fn.index("self._journal(")]
     assert re.search(r"self\._last_vol2\s*=\s*None", body), \
         "vol2 must be cleared before each candidate is judged"
     assert re.search(r"self\._last_buyers\s*=\s*None", body), \

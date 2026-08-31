@@ -85,6 +85,21 @@ MAX_ACCEL = 10.0       # above this the launch is a frenzy, not a trend
 # low deliberately: it excludes the untradeable, not the merely small,
 # since volume LEVEL was tested as an alpha filter and did not help.
 MIN_SOL_VOL2 = 0.5     # total SOL swapped in the first two minutes
+# "Zoom out the chart -> already crashed? Skip it." Taken from a trader's
+# cheat sheet and tested rather than trusted: among pools already passing
+# range and volume, where the entry sits relative to the window's high is
+# the strongest single filter found in this project.
+#   at the high (<10% below)   n=50  2x 34%  death 20%
+#   10-30% below               n=25  2x  4%  death 40%
+#   30-60% below               n=32  2x  3%  death 25%
+# Out of sample it holds on its own: OR 3.25, p=0.0404.
+# It also survives the observation discount that gutted everything else --
+# +161.8% ideal against +148.7% realistic, where the volume-only rule
+# falls +40.5% -> +15.7%. The reason is mechanical, and is the point:
+# buying near the high selects coins that TREND rather than spike, and a
+# trend is still there when the bot polls ten seconds later. The old rule's
+# profits lived in intra-minute spikes it could never actually catch.
+MAX_DRAWDOWN = 0.10    # enter within 10% of the high we observed
 MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
                        # Jupiter's batch price call intermittently omits
                        # brand-new mints, so demanding 6 samples was
@@ -128,6 +143,22 @@ class Candidate:
     def age(self) -> float:
         return time.time() - self.detected_ts
 
+    def drawdown(self) -> float | None:
+        """How far below the observed high we would be buying. 0 means we
+        are entering at the top of everything seen so far."""
+        p = [x for x in self.prices if x and x > 0]
+        if len(p) < 2:
+            return None
+        hi = max(p)
+        return None if hi <= 0 else 1.0 - p[-1] / hi
+
+    def drift(self) -> float | None:
+        """Where the entry sits versus where the window opened."""
+        p = [x for x in self.prices if x and x > 0]
+        if len(p) < 2 or p[0] <= 0:
+            return None
+        return p[-1] / p[0] - 1.0
+
     def range_frac(self) -> float:
         p = [x for x in self.prices if x and x > 0]
         if len(p) < 2:
@@ -166,6 +197,8 @@ class RealtimeScalper:
         self._last_vol2: float | None = None
         self._pool_cache: dict[str, tuple[float, float | None]] = {}
         self._last_buyers: tuple[int, int] | None = None
+        self._last_drift: float | None = None
+        self._last_drawdown: float | None = None
         log.info("scalper up: mode=%s cash=%.2f positions=%d",
                  "LIVE" if self.is_live else "PAPER", self.cash,
                  len(self.positions))
@@ -234,19 +267,27 @@ class RealtimeScalper:
             # built to decide whether breadth belongs in the rule.
             self._last_vol2 = None
             self._last_buyers = None
+            self._last_drift = None
+            self._last_drawdown = None
             accel = self.acceleration(mint, c.detected_ts) if (
                 n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
             vol2 = self._last_vol2
+            drawdown = c.drawdown()
+            self._last_drawdown = drawdown
+            self._last_drift = c.drift()
             ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE and accel is not None
                   and MIN_ACCEL <= accel < MAX_ACCEL
-                  and (vol2 is None or vol2 >= MIN_SOL_VOL2))
+                  and (vol2 is None or vol2 >= MIN_SOL_VOL2)
+                  and drawdown is not None and drawdown <= MAX_DRAWDOWN)
             self._journal(mint, rng, n, accel, ok)
             if not ok:
                 log.info("skip %s: range %.1f%% samples %d accel %s "
-                         "(need >=%.1f%%, %d, >=%.1f)",
+                         "drawdown %s (need >=%.1f%%, %d, >=%.1f, <=%.0f%%)",
                          mint[:10], rng * 100, n,
                          f"{accel:.2f}" if accel is not None else "n/a",
-                         MIN_RANGE * 100, MIN_SAMPLES, MIN_ACCEL)
+                         f"{drawdown:.0%}" if drawdown is not None else "n/a",
+                         MIN_RANGE * 100, MIN_SAMPLES, MIN_ACCEL,
+                         MAX_DRAWDOWN * 100)
                 self.candidates.pop(mint, None)
                 continue
             self._enter(mint, c)
@@ -460,12 +501,14 @@ class RealtimeScalper:
             self.state.db.execute(
                 "INSERT OR REPLACE INTO candidate_journal "
                 "(mint, ts, range_frac, samples, accel, taken, vol2, "
-                "buyers_m1, buyers_m2) VALUES (?,?,?,?,?,?,?,?,?)",
+                "buyers_m1, buyers_m2, drawdown, drift) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (mint, time.time(), float(rng), int(n),
                  float(accel) if accel is not None else None, int(taken),
                  self._last_vol2,
                  self._last_buyers[0] if self._last_buyers else None,
-                 self._last_buyers[1] if self._last_buyers else None))
+                 self._last_buyers[1] if self._last_buyers else None,
+                 self._last_drawdown, self._last_drift))
             self.state.db.commit()
         except Exception as e:                       # journalling is never
             log.debug("journal write failed: %s", e)  # allowed to block a trade

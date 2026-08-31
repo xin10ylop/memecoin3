@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS candidate_journal (
     buyers_m1 INTEGER,
     buyers_m2 INTEGER,
     outcome REAL,
-    outcome_ts REAL
+    outcome_ts REAL,
+    drawdown REAL,
+    drift REAL
 );
 """
 

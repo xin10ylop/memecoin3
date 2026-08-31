@@ -158,3 +158,32 @@ def test_candidate_scratch_does_not_leak_between_coins():
         "vol2 must be cleared before each candidate is judged"
     assert re.search(r"self\._last_buyers\s*=\s*None", body), \
         "buyer counts must be cleared before each candidate is judged"
+
+
+def test_drawdown_and_drift_read_the_observed_window():
+    """The clean-chart filter is the strongest single result in the
+    project; an inverted or off-by-one drawdown would silently invert it."""
+    from memebot.live.scalper import Candidate
+
+    c = Candidate(mint="m", detected_ts=0.0)
+    c.prices = [1.0, 1.5, 2.0]              # entering at the high
+    assert c.drawdown() == 0.0
+    assert c.drift() == 1.0
+
+    c.prices = [1.0, 2.0, 1.0]              # spiked then gave it all back
+    assert c.drawdown() == 0.5              # 50% off the high -> reject
+    assert c.drift() == 0.0
+
+    c.prices = [2.0, 1.0]                   # falling knife
+    assert c.drawdown() == 0.5
+    assert c.drift() == -0.5
+
+    c.prices = [1.0]                        # nothing to compare
+    assert c.drawdown() is None and c.drift() is None
+
+
+def test_clean_chart_threshold_rejects_what_the_data_rejected():
+    from memebot.live.scalper import MAX_DRAWDOWN
+    # buckets measured: <10% off the high doubled 34% of the time,
+    # 10-30% only 4%. The cut belongs at 10%, not looser.
+    assert MAX_DRAWDOWN <= 0.10

@@ -27,12 +27,21 @@ ENV
   echo "created /etc/memebot/secrets.env — put your RPC key in it"
 fi
 
-for svc in scalper outcomes; do
+# A stable, unguessable path for the status page, generated once so the
+# phone URL does not change on every restart.
+if ! grep -q MEMEBOT_WEB_TOKEN /etc/memebot/secrets.env 2>/dev/null; then
+  echo "MEMEBOT_WEB_TOKEN=$(head -c 9 /dev/urandom | base64 | tr -d '/+=')" \
+    >> /etc/memebot/secrets.env
+fi
+
+for svc in scalper outcomes web; do
   case "$svc" in
     scalper)  DESC="memebot launch scalper"
               CMD="$REPO_DIR/.venv/bin/memebot --config config/scalp.yaml scalp" ;;
     outcomes) DESC="memebot outcome recorder"
               CMD="$REPO_DIR/.venv/bin/python3 scripts/fill_outcomes.py" ;;
+    web)      DESC="memebot status page"
+              CMD="$REPO_DIR/.venv/bin/python3 scripts/status_web.py" ;;
   esac
   cat > "/etc/systemd/system/memebot-$svc.service" <<UNIT
 [Unit]
@@ -73,10 +82,19 @@ cd "$REPO_DIR" && exec "$REPO_DIR/.venv/bin/python3" scripts/report.py
 REPORT
 chmod +x /usr/local/bin/memebot-report
 
+cat > /usr/local/bin/memebot-url <<URL
+#!/usr/bin/env bash
+. /etc/memebot/secrets.env
+ip=\$(curl -s --max-time 8 https://api.ipify.org || hostname -I | awk '{print \$1}')
+echo "http://\$ip:8080/\$MEMEBOT_WEB_TOKEN"
+URL
+chmod +x /usr/local/bin/memebot-url
+
 systemctl daemon-reload
-systemctl enable memebot-scalper memebot-outcomes
+systemctl enable memebot-scalper memebot-outcomes memebot-web
 echo
 echo "done. next:"
 echo "  1. put your Helius key in /etc/memebot/secrets.env"
-echo "  2. sudo systemctl start memebot-scalper memebot-outcomes"
-echo "  3. memebot-status"
+echo "  2. sudo systemctl start memebot-scalper memebot-outcomes memebot-web"
+echo "  3. memebot-report          (full picture)"
+echo "  4. memebot-url             (phone-readable status page)"

@@ -165,6 +165,7 @@ class RealtimeScalper:
         self._crash_count: dict[str, int] = {}
         self._last_vol2: float | None = None
         self._pool_cache: dict[str, tuple[float, float | None]] = {}
+        self._last_buyers: tuple[int, int] | None = None
         log.info("scalper up: mode=%s cash=%.2f positions=%d",
                  "LIVE" if self.is_live else "PAPER", self.cash,
                  len(self.positions))
@@ -225,6 +226,14 @@ class RealtimeScalper:
             c.decided = True
             rng = c.range_frac()
             n = len([p for p in c.prices if p])
+            # Clear per-candidate scratch BEFORE deciding. These are set
+            # inside acceleration(), which only runs when range and sample
+            # checks pass -- so without this reset a candidate that fails
+            # range is journalled with the PREVIOUS coin's volume and buyer
+            # counts. That would quietly poison the very dataset being
+            # built to decide whether breadth belongs in the rule.
+            self._last_vol2 = None
+            self._last_buyers = None
             accel = self.acceleration(mint, c.detected_ts) if (
                 n >= MIN_SAMPLES and rng >= MIN_RANGE) else None
             vol2 = self._last_vol2
@@ -450,10 +459,13 @@ class RealtimeScalper:
         try:
             self.state.db.execute(
                 "INSERT OR REPLACE INTO candidate_journal "
-                "(mint, ts, range_frac, samples, accel, taken) "
-                "VALUES (?,?,?,?,?,?)",
+                "(mint, ts, range_frac, samples, accel, taken, vol2, "
+                "buyers_m1, buyers_m2) VALUES (?,?,?,?,?,?,?,?,?)",
                 (mint, time.time(), float(rng), int(n),
-                 float(accel) if accel is not None else None, int(taken)))
+                 float(accel) if accel is not None else None, int(taken),
+                 self._last_vol2,
+                 self._last_buyers[0] if self._last_buyers else None,
+                 self._last_buyers[1] if self._last_buyers else None))
             self.state.db.commit()
         except Exception as e:                       # journalling is never
             log.debug("journal write failed: %s", e)  # allowed to block a trade
@@ -512,6 +524,20 @@ class RealtimeScalper:
                 v = []
             if len(v) >= 2 and v[0] > 0:
                 self._last_vol2 = float(v[0] + v[1])
+                # Breadth is RECORDED, never filtered on -- it has no
+                # validation yet, and filtering live on an unvalidated
+                # feature is exactly how the transaction-count proxy got
+                # shipped this morning. Tomorrow's journal decides whether
+                # it earns a place in the rule.
+                try:
+                    who = self.helius.buyers_per_minute(mint,
+                                                        since_ts=since_ts)
+                    if len(who) >= 2:
+                        self._last_buyers = (len(who[0]), len(who[1]))
+                    else:
+                        self._last_buyers = None
+                except Exception:
+                    self._last_buyers = None
                 return v[1] / v[0]
             self._last_vol2 = None
             return None

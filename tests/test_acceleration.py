@@ -145,3 +145,16 @@ def test_unroutable_token_with_a_live_pool_is_not_marked_to_zero():
     obj._pool_cache.clear()
     obj.gt = Fake([pool(200, 0.0, 1.0e-05)])              # too thin to trust
     assert obj.pool_alive_price("m") is None
+
+
+def test_candidate_scratch_does_not_leak_between_coins():
+    """Volume and buyer counts are set only when acceleration() runs. A
+    candidate that fails the range check must journal nulls, never the
+    previous coin's numbers."""
+    import re
+    src = open("src/memebot/live/scalper.py").read()
+    body = src[src.index("rng = c.range_frac()"):src.index("self._journal(")]
+    assert re.search(r"self\._last_vol2\s*=\s*None", body), \
+        "vol2 must be cleared before each candidate is judged"
+    assert re.search(r"self\._last_buyers\s*=\s*None", body), \
+        "buyer counts must be cleared before each candidate is judged"

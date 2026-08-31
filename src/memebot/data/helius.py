@@ -109,3 +109,43 @@ class Helius:
                 return out
             return []
         return out
+
+    def buyers_per_minute(self, address: str, since_ts: float | None = None,
+                          max_pages: int = 12) -> list[set]:
+        """Distinct BUYER wallets per minute since the first swap, oldest first.
+
+        Volume answers how many dollars arrived; it cannot tell fifty
+        people buying from two bots trading with each other. Breadth is the
+        harder quantity to fake, and it is free here -- every parsed swap
+        already carries its wallet, so this reuses the call the volume
+        feature makes.
+
+        A buyer is a wallet that RECEIVED the token in the swap; the wallet
+        sending SOL and receiving nothing is a seller.
+        """
+        txs, before = [], None
+        for _ in range(max_pages):
+            page = self.transactions(address, limit=100, before=before)
+            if not page:
+                break
+            txs.extend(page)
+            before = page[-1].get("signature")
+            oldest = min((t.get("timestamp") or 0) for t in page)
+            if since_ts is not None and oldest <= since_ts + 20:
+                break
+        swaps = [t for t in txs
+                 if t.get("type") == "SWAP" and t.get("timestamp")]
+        if not swaps:
+            return []
+        times = [t["timestamp"] for t in swaps]
+        if since_ts is not None and min(times) > since_ts + 20:
+            return []
+        t0 = min(times)
+        buckets: dict[int, set] = {}
+        for t in swaps:
+            idx = int((t["timestamp"] - t0) // 60)
+            who = buckets.setdefault(idx, set())
+            for tr in (t.get("tokenTransfers") or []):
+                if tr.get("mint") == address and tr.get("toUserAccount"):
+                    who.add(tr["toUserAccount"])
+        return [buckets.get(i, set()) for i in range(max(buckets) + 1)]

@@ -35,7 +35,10 @@ CREATE TABLE IF NOT EXISTS candidate_journal (
     range_frac REAL,
     samples INTEGER,
     accel REAL,
-    taken INTEGER
+    taken INTEGER,
+    vol2 REAL,
+    buyers_m1 INTEGER,
+    buyers_m2 INTEGER
 );
 """
 

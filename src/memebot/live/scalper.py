@@ -196,6 +196,12 @@ class RealtimeScalper:
         self._crash_count: dict[str, int] = {}
         self._last_vol2: float | None = None
         self._pool_cache: dict[str, tuple[float, float | None]] = {}
+        # Funnel counters. Losses used to be invisible: 81 launches were
+        # detected and 23 evaluated, and the gap was only found by grepping
+        # logs by hand. Every stage is counted so the heartbeat shows where
+        # opportunity is going.
+        self._n = {"events": 0, "unresolved": 0, "watched": 0,
+                   "decided": 0, "entered": 0, "failed": 0}
         self._last_buyers: tuple[int, int] | None = None
         self._last_drift: float | None = None
         self._last_drawdown: float | None = None
@@ -225,13 +231,24 @@ class RealtimeScalper:
         return None
 
     def intake(self) -> None:
-        for ev in self.feed.recent(max_age_sec=90):
+        # A generous window because _seen_sigs already dedupes: the old
+        # 90s cutoff silently discarded every launch that arrived while the
+        # loop was blocked on network calls, which was most of them.
+        for ev in self.feed.recent(max_age_sec=900):
             if ev.signature in self._seen_sigs:
                 continue
-            self._seen_sigs.add(ev.signature)
+            self._n["events"] += 1
             mint = self._resolve_mint(ev.signature)
-            if not mint or mint in self.candidates or mint in self.positions:
+            if not mint:
+                self._n["unresolved"] += 1
+                # Do NOT mark it seen. Resolution is an RPC call and a
+                # transient failure used to discard the launch permanently;
+                # leaving it unmarked lets the next cycle retry it.
                 continue
+            self._seen_sigs.add(ev.signature)
+            if mint in self.candidates or mint in self.positions:
+                continue
+            self._n["watched"] += 1
             self.candidates[mint] = Candidate(mint, ev.detected_ts)
             log.info("watching %s (detected %.0fs ago)", mint[:10],
                      time.time() - ev.detected_ts)
@@ -266,8 +283,10 @@ class RealtimeScalper:
             # Now a failure is loud, journalled, and drops the candidate
             # rather than parking it forever.
             try:
+                self._n["decided"] += 1
                 self._decide_one(mint, c)
             except Exception:
+                self._n["failed"] += 1
                 log.exception("deciding %s failed — dropping it", mint[:10])
                 try:
                     self._journal(mint, c.range_frac(),
@@ -583,7 +602,19 @@ class RealtimeScalper:
         """
         if self.helius.available:
             try:
-                v = self.helius.swap_volume_per_minute(mint, since_ts=since_ts)
+                # ONE paged fetch, both features. These were two independent
+                # 12-page walks over the same transactions -- up to 24 HTTP
+                # calls per candidate, blocking the loop while new launches
+                # aged out of the intake window unseen.
+                swaps, truncated = self.helius.swaps_since(mint,
+                                                           since_ts=since_ts)
+                v = [] if truncated else self.helius.volume_buckets(swaps)
+                if truncated and swaps:
+                    vb = self.helius.volume_buckets(swaps)
+                    # a truncated window overstates the ratio, so it can
+                    # still REJECT, never accept (see helius.py)
+                    if len(vb) >= 2 and vb[0] > 0 and vb[1] / vb[0] < 1.0:
+                        v = vb
             except Exception as e:
                 log.warning("volume lookup failed for %s: %s", mint[:10], e)
                 v = []
@@ -595,12 +626,9 @@ class RealtimeScalper:
                 # shipped this morning. Tomorrow's journal decides whether
                 # it earns a place in the rule.
                 try:
-                    who = self.helius.buyers_per_minute(mint,
-                                                        since_ts=since_ts)
-                    if len(who) >= 2:
-                        self._last_buyers = (len(who[0]), len(who[1]))
-                    else:
-                        self._last_buyers = None
+                    who = self.helius.buyer_buckets(swaps, mint)
+                    self._last_buyers = ((who[0], who[1])
+                                         if len(who) >= 2 else None)
                 except Exception:
                     self._last_buyers = None
                 return v[1] / v[0]
@@ -663,10 +691,17 @@ class RealtimeScalper:
                 self.manage()
                 if now - last_beat >= 300:
                     s = self.state.pnl_summary()
+                    n = self._n
                     log.info("heartbeat equity=%.2f watching=%d positions=%d "
                              "trades=%d pnl=%.2f", self.equity(),
                              len(self.candidates), len(self.positions),
                              s["n_trades"], s["total_pnl_usd"])
+                    log.info("funnel: events=%d unresolved=%d watched=%d "
+                             "decided=%d entered=%d failed=%d "
+                             "(reaching a decision: %.0f%%)",
+                             n["events"], n["unresolved"], n["watched"],
+                             n["decided"], n["entered"], n["failed"],
+                             100.0 * n["decided"] / max(n["events"], 1))
                     last_beat = now
                     px = self.jup.prices_usd([SOL_MINT])
                     if px.get(SOL_MINT):

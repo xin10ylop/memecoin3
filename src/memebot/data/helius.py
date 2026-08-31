@@ -51,6 +51,62 @@ class Helius:
                                  params=params)
         return out if isinstance(out, list) else []
 
+    def swaps_since(self, address: str, since_ts: float | None = None,
+                    max_pages: int = 12) -> tuple[list, bool]:
+        """Page back to the launch once, returning (swaps, truncated).
+
+        Volume and buyer breadth both need the same transactions, and each
+        used to page for them separately -- up to 24 HTTP calls to answer
+        one question about one candidate, blocking the trading loop while
+        new launches expired unseen. Fetch once, derive both.
+        """
+        txs, before = [], None
+        for _ in range(max_pages):
+            page = self.transactions(address, limit=100, before=before)
+            if not page:
+                break
+            txs.extend(page)
+            before = page[-1].get("signature")
+            oldest = min((t.get("timestamp") or 0) for t in page)
+            if since_ts is not None and oldest <= since_ts + 20:
+                break
+        swaps = [t for t in txs
+                 if t.get("type") == "SWAP" and t.get("timestamp")]
+        if not swaps:
+            return [], False
+        truncated = (since_ts is not None
+                     and min(t["timestamp"] for t in swaps) > since_ts + 20)
+        return swaps, truncated
+
+    @staticmethod
+    def volume_buckets(swaps: list) -> list[float]:
+        """SOL per minute from pre-fetched swaps, oldest minute first."""
+        if not swaps:
+            return []
+        t0 = min(t["timestamp"] for t in swaps)
+        buckets: dict[int, float] = {}
+        for t in swaps:
+            lamports = max((n.get("amount") or 0)
+                           for n in (t.get("nativeTransfers") or [])) \
+                if t.get("nativeTransfers") else 0
+            idx = int((t["timestamp"] - t0) // 60)
+            buckets[idx] = buckets.get(idx, 0.0) + lamports / 1e9
+        return [buckets.get(i, 0.0) for i in range(max(buckets) + 1)]
+
+    @staticmethod
+    def buyer_buckets(swaps: list, mint: str) -> list[int]:
+        """Distinct buyer wallets per minute from pre-fetched swaps."""
+        if not swaps:
+            return []
+        t0 = min(t["timestamp"] for t in swaps)
+        buckets: dict[int, set] = {}
+        for t in swaps:
+            who = buckets.setdefault(int((t["timestamp"] - t0) // 60), set())
+            for tr in (t.get("tokenTransfers") or []):
+                if tr.get("mint") == mint and tr.get("toUserAccount"):
+                    who.add(tr["toUserAccount"])
+        return [len(buckets.get(i, set())) for i in range(max(buckets) + 1)]
+
     def swap_volume_per_minute(self, address: str,
                                since_ts: float | None = None,
                                max_pages: int = 12) -> list[float]:

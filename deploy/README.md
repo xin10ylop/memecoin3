@@ -20,6 +20,22 @@ sudo nano /etc/memebot/secrets.env   # paste your Helius RPC URL
 sudo systemctl start memebot-scalper memebot-outcomes
 ```
 
+## Updating
+
+```bash
+cd ~/memebot
+curl -sSL -o memebot.tar.gz "https://github.com/xin10ylop/memecoin3/archive/refs/heads/claude/ai-crypto-trading-bot-i92seg.tar.gz"
+tar xzf memebot.tar.gz --strip-components=1
+sudo systemctl restart memebot-scalper memebot-outcomes
+```
+
+Do NOT add `--exclude=data`. The database directory is gitignored and is
+not in the archive, so the flag protects nothing -- but it matches every
+path component named `data`, which silently drops the whole of
+`src/memebot/data/` (the HTTP, RPC, Helius and GeckoTerminal clients).
+That left a deployment running month-old client code against fresh
+strategy code for a full day, with no error and no trades.
+
 ## Check on it
 
 ```bash

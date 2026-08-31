@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS candidate_journal (
     taken INTEGER,
     vol2 REAL,
     buyers_m1 INTEGER,
-    buyers_m2 INTEGER
+    buyers_m2 INTEGER,
+    outcome REAL,
+    outcome_ts REAL
 );
 """
 

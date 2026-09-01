@@ -41,7 +41,8 @@ sys.path.insert(0, os.path.join(
 
 from memebot.data.gt import sanitize_bars  # noqa: E402
 
-DB = sys.argv[1] if len(sys.argv) > 1 else "data/panel.db"
+DB = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") \
+    else "data/panel.db"
 TRAIL = float(os.environ.get("MEMEBOT_TRAIL", "0.10"))
 MIN_RANGE = float(os.environ.get("MEMEBOT_MIN_RANGE", "0.172"))
 COST, HORIZON = 0.016, 30

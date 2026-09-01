@@ -40,3 +40,44 @@ def test_exec_rule_still_captures_a_genuine_climb():
 def test_both_rules_agree_a_rug_is_a_rug():
     assert pr.shadow_rule(RUG, 1.0) < -0.05
     assert pr.exec_rule(RUG, 1.0) < -0.05
+
+
+def _outcome_under():
+    import importlib.util
+    import os
+    spec = importlib.util.spec_from_file_location(
+        "fill_outcomes", os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "scripts", "fill_outcomes.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m.outcome_under
+
+
+def _panel(fwd):
+    # outcome_under enters at the close of bars[1] and scores bars[2:]
+    head = [[0, 1, 1, 1, 1, 100], [60, 1, 1, 1, 1, 100]]
+    return head + fwd
+
+
+def test_journal_exec_column_refuses_the_wick_the_trail_column_pays_for():
+    """The two scorings must disagree exactly where it matters."""
+    under = _outcome_under()
+    # flat pool, one $10 trade prints a 5x high, then it drifts down
+    fwd = [[120, 1, 1.02, .99, 1.00, 500],
+           [180, 1, 5.00, .99, 1.00, 10],
+           [240, 1, 1.02, .95, .98, 400],
+           [300, .98, .99, .90, .92, 300]]
+    bars = _panel(fwd)
+    paid = under(bars, "trail", 0.10, 30)
+    honest = under(bars, "exec", 0.10, 30)
+    assert paid > 3.0, "the bar-high scoring should pay for the wick"
+    assert honest < 0.0, "the executable scoring should not"
+
+
+def test_exec_column_still_rides_a_real_move():
+    under = _outcome_under()
+    fwd = [[120, 1, 1.20, .98, 1.15, 500],
+           [180, 1.15, 2.0, 1.14, 1.95, 900],
+           [240, 1.95, 2.0, 1.5, 1.60, 600],
+           [300, 1.6, 1.65, 1.5, 1.55, 400]]
+    assert under(_panel(fwd), "exec", 0.10, 30) > 0.5

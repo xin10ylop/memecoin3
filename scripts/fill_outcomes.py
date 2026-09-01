@@ -52,6 +52,16 @@ EXITS = {
     "tp2x": ("tp", 2.0, 30),
     "time10": ("time", 0.0, 10),
     "time30": ("time", 0.0, 30),
+    # The trail branch above arms on a bar's HIGH and may fill inside the
+    # bar that set it. On the live migration population that overstates the
+    # mean by 47 points: 2EoFtZ scores +374% off a 5.3x high printed on
+    # $6,339 against a $915 median bar, and the position actually closed at
+    # -26%. These columns arm the peak only once a bar has CLOSED and let
+    # the stop fill from the NEXT bar, which is a price that survived a
+    # full minute. Rank rules on these.
+    "exec30": ("exec", 0.30, 30),
+    "exec15": ("exec", 0.15, 30),
+    "exec10": ("exec", 0.10, 30),
 }
 
 
@@ -83,6 +93,14 @@ def outcome_under(bars: list, kind: str, param: float,
             if lo <= peak * (1 - param):
                 return min(max(peak * (1 - param), lo) / entry - 1 - COST,
                            20.0)
+        if kind == "exec":
+            # stop first, from the peak as it stood when the LAST bar closed
+            stop = peak * (1 - param)
+            if lo <= stop:
+                op = float(b[1])
+                fill = min(stop, op) if op > 0 else stop
+                return min(fill / entry - 1 - COST, 20.0)
+            peak = max(peak, c)
     return DEAD_RECOVERY - 1 - COST
 
 
@@ -123,7 +141,7 @@ def main() -> int:
         # of data rather than a backfill that never ran.
         todo = list(db.execute(
             "SELECT mint FROM candidate_journal "
-            "WHERE (outcome IS NULL OR out_trail30 IS NULL) "
+            "WHERE (outcome IS NULL OR out_trail30 IS NULL OR out_exec10 IS NULL) "
             "AND ts < ? ORDER BY ts DESC LIMIT 40", (cutoff,)))
         db.close()
         if not todo:

@@ -94,27 +94,34 @@ def main() -> int:
     # table described a system nobody was running.
     # Fall back if no column matches the deployed trail (a trail nobody has
     # backfilled yet must not take the whole table down with it).
+    # Rank on the EXECUTABLE score. The bar-high columns arm a trail on a
+    # price that may be one trade and let it fill inside the bar that
+    # printed it; on the live 18 trades that overstates the mean by 47
+    # points (2EoFtZ: +374% scored, -26% booked). Both are selected so the
+    # gap stays visible instead of being quietly resolved in our favour.
     have = {r[1] for r in d.execute("PRAGMA table_info(candidate_journal)")}
-    col = f"out_trail{int(round(TRAIL * 100))}"
-    scored = (f"COALESCE({col}, outcome)" if col in have else "outcome")
-    if col not in have:
-        print(f"(no {col} column — scoring on the recorded outcome instead)")
+    pct = int(round(TRAIL * 100))
+    ecol, tcol = f"out_exec{pct}", f"out_trail{pct}"
+    scored = ecol if ecol in have else (tcol if tcol in have else "outcome")
+    basis = ("prices a seller could have met" if scored == ecol
+             else "BAR HIGHS — inflated, see research/peak_reality.py")
     j = list(d.execute(
         "SELECT range_frac, accel, vol2, buyers_m1, buyers_m2, drawdown, "
-        f"drift, {scored} FROM candidate_journal {where}"))
+        f"drift, {scored}, {tcol if tcol in have else 'NULL'} "
+        f"FROM candidate_journal {where}"))
     if len(feeds) > 1 and live:
         print(f"feeds present in the journal: {', '.join(sorted(feeds))} "
               f"-- analysing the real-time feeds ({', '.join(live)}) only, "
               f"since a launch observed minutes late is not the same "
               f"observation")
     print(f"comparable candidates with a settled outcome: {len(j)}   "
-          f"(scored on the deployed {TRAIL:.0%} trailing exit)")
+          f"({TRAIL:.0%} trail, scored on {basis})")
     if len(j) < 20:
         print("(need ~20+ before any comparison means anything)")
     else:
         import pandas as pd
         c = pd.DataFrame(j, columns=["range", "accel", "vol2", "b1", "b2",
-                                     "dd", "drift", "ret"])
+                                     "dd", "drift", "ret", "barhigh"])
         c = c[(c["range"] >= MIN_RANGE) & c.ret.notna()]
         vol = c.accel.between(1.0, 10.0, inclusive="left")
         clean = c.dd <= 0.10
@@ -156,6 +163,12 @@ def main() -> int:
             print(f"without them the mean would be "
                   f"{base[base.ret > -0.85].ret.mean():+.1%} — so deaths "
                   f"are {'the main problem' if abs(drag) > abs(base.ret.mean()) else 'not what decides this'}")
+        both = c[c.barhigh.notna() & c.ret.notna()]
+        if scored == ecol and len(both) >= 20:
+            gap = both.barhigh.mean() - both.ret.mean()
+            print(f"scoring on bar highs instead would read "
+                  f"{both.barhigh.mean():+.1%} — {gap:+.1%} of credit for "
+                  f"prices nobody could sell into")
     print()
     subprocess.run([sys.executable, "scripts/audit_trades.py", DB])
     return 0

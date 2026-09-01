@@ -86,7 +86,13 @@ class StateStore:
                           ("out_trail30", "REAL"), ("out_trail15", "REAL"),
                           ("out_trail10", "REAL"), ("out_tp1_5x", "REAL"),
                           ("out_tp2x", "REAL"), ("out_time10", "REAL"),
-                          ("out_time30", "REAL")):
+                          ("out_time30", "REAL"),
+                          # the same trails scored on prices a seller could
+                          # actually have met. On the live population the
+                          # bar-high scoring overstates by 47 points, so
+                          # these are the columns to rank rules with.
+                          ("out_exec30", "REAL"), ("out_exec15", "REAL"),
+                          ("out_exec10", "REAL")):
             if col not in jcols:
                 self.db.execute(
                     f"ALTER TABLE candidate_journal ADD COLUMN {col} {decl}")

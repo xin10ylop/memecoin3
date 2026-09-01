@@ -35,8 +35,9 @@ sys.path.insert(0, os.path.join(
 
 from memebot.data.gt import GeckoTerminal, sanitize_bars  # noqa: E402
 
-DB = sys.argv[1] if len(sys.argv) > 1 else "data/scalp.db"
-N = int(sys.argv[2]) if len(sys.argv) > 2 else 25
+# Parsed in main(), not at import: this module is imported by the test
+# suite, where sys.argv belongs to pytest and int("-q") is a crash.
+DEFAULT_DB, DEFAULT_N = "data/scalp.db", 25
 TRAIL = float(os.environ.get("MEMEBOT_TRAIL", "0.10"))
 COST = 0.016      # the same round-trip cost the shadow columns carry
 
@@ -72,11 +73,14 @@ def exec_rule(bars, entry: float) -> float:
     return float(bars[-1][4]) / entry - 1 - COST
 
 
-def main() -> int:
-    d = sqlite3.connect(DB)
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv if argv is None else argv
+    db_path = argv[1] if len(argv) > 1 else DEFAULT_DB
+    n = int(argv[2]) if len(argv) > 2 else DEFAULT_N
+    d = sqlite3.connect(db_path)
     trades = list(d.execute(
         "SELECT symbol, mint, entry_price, exit_price, entry_ts, exit_ts "
-        f"FROM trades ORDER BY exit_ts DESC LIMIT {N}"))[::-1]
+        f"FROM trades ORDER BY exit_ts DESC LIMIT {n}"))[::-1]
     if not trades:
         print("no closed trades")
         return 0

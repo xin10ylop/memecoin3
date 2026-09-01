@@ -42,6 +42,7 @@ class RateLimiter:
 class HttpClient:
     def __init__(self, per_min: float = 30.0, headers: dict | None = None):
         self.limiter = RateLimiter(per_min)
+        self.last_error: str | None = None
         self.session = requests.Session()
         self.session.headers.update({"accept": "application/json",
                                      "user-agent": "memebot/0.1"})
@@ -50,11 +51,20 @@ class HttpClient:
 
     def get_json(self, url: str, params: dict | None = None,
                  retries: int = 3, timeout: int = 20) -> Any | None:
+        """None means 'no answer' OR 'no data' -- last_error tells them apart.
+
+        Callers that record a permanent verdict about a resource need to know
+        which one they got. A backfill that treats "throttled four times" the
+        same as "this pool no longer exists" writes off rows it could have
+        scored, and does it fastest exactly when the API is busiest.
+        """
+        self.last_error: str | None = None
         for attempt in range(retries + 1):
             self.limiter.wait()
             try:
                 r = self.session.get(url, params=params, timeout=timeout)
             except requests.RequestException as e:
+                self.last_error = str(e)
                 log.warning("GET %s failed (%s) attempt=%d", url, e, attempt)
                 time.sleep(2 * (attempt + 1))
                 continue
@@ -65,15 +75,18 @@ class HttpClient:
                 except ValueError:
                     return None
             if r.status_code == 429:
+                self.last_error = "429"
                 self.limiter.penalize()
                 log.info("429 on %s (interval now %.1fs)", url,
                          self.limiter.interval)
                 time.sleep(3 * (attempt + 1))
                 continue
             if r.status_code == 404:
-                return None
+                return None            # definitive: it is not there
+            self.last_error = f"http {r.status_code}"
             log.warning("HTTP %d on %s", r.status_code, url)
             time.sleep(2 * (attempt + 1))
+        self.last_error = self.last_error or "no answer after retries"
         return None
 
     def post_json(self, url: str, payload: dict, retries: int = 3,

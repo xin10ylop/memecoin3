@@ -106,3 +106,41 @@ def test_backfill_window_starts_at_the_candidates_own_launch():
     assert len(win) == 40, "keeps the detection minute and everything after"
     assert win[0][0] == launch, "starts at the bar detection happened in"
     assert float(win[1][4]) == 2, "entry comes from the launch, not before"
+
+
+def test_http_reports_whether_it_got_an_answer():
+    """A backfill must not treat 'throttled' as 'this pool is gone'.
+
+    get_json returns None for both "no data" and "no answer", and the
+    attempt counter records a permanent verdict. Without this distinction a
+    rate-limited row is written off after three throttled passes -- fastest
+    exactly when the API is busiest.
+    """
+    import sys
+    import types
+    sys.path.insert(0, "src")
+    from memebot.data.http import HttpClient
+
+    c = HttpClient(per_min=6000)
+
+    class Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+        def json(self):
+            return {"ok": True}
+
+    c.session = types.SimpleNamespace(get=lambda *a, **k: Resp(200),
+                                      headers={}, )
+    assert c.get_json("http://x") == {"ok": True}
+    assert c.last_error is None, "a 200 is a definitive answer"
+
+    c.session = types.SimpleNamespace(get=lambda *a, **k: Resp(404),
+                                      headers={})
+    assert c.get_json("http://x") is None
+    assert c.last_error is None, "a 404 is also definitive: it is not there"
+
+    c.session = types.SimpleNamespace(get=lambda *a, **k: Resp(429),
+                                      headers={})
+    assert c.get_json("http://x", retries=0) is None
+    assert c.last_error == "429", "throttling is NOT a verdict about the data"

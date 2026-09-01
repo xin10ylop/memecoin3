@@ -189,10 +189,18 @@ def main() -> int:
             continue
         done = 0
         for mint, det_ts in todo:
-            bump(mint)          # count the attempt BEFORE it can fail
             try:
                 pools = gt.token_pools(mint)
                 if not pools:
+                    # An empty list means "no pools" OR "no answer". Counting
+                    # a throttled call as evidence the pool is gone writes
+                    # off scoreable rows, and does it fastest exactly when
+                    # the aggregator is busiest -- which is now.
+                    if gt.http.last_error is None:
+                        bump(mint)
+                    else:
+                        log.info("%s: no answer (%s) — not counted against "
+                                 "it", mint[:10], gt.http.last_error)
                     continue
                 # Anchor the fetch to WHEN THIS CANDIDATE WAS SEEN. Without
                 # before_timestamp the aggregator returns the most recent
@@ -209,6 +217,9 @@ def main() -> int:
                 bars = window_from(bars, det_ts)
                 ret = outcome_from_bars(bars)
                 if ret is None:
+                    # bars in hand and still not scoreable: a real verdict
+                    if gt.http.last_error is None:
+                        bump(mint)
                     continue
                 db = sqlite3.connect(DB, timeout=60)
                 db.execute("PRAGMA busy_timeout=60000")
@@ -226,6 +237,10 @@ def main() -> int:
                 db.close()
                 done += 1
             except Exception as e:
+                # A raise here is a code or data fault, not throttling --
+                # get_json swallows transport errors and returns None. Count
+                # it, so one poisonous row cannot occupy the batch forever.
+                bump(mint)
                 log.warning("outcome for %s failed: %s", mint[:10], e)
         log.info("filled %d outcomes (%d pending)", done, len(todo))
         time.sleep(60)

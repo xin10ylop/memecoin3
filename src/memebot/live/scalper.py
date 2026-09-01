@@ -404,11 +404,24 @@ class RealtimeScalper:
         self._last_drift = c.drift()
         free_ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE
                    and drawdown is not None and drawdown <= MAX_DRAWDOWN)
-        accel = self.acceleration(mint, c.detected_ts) if free_ok else None
+        # The acceleration gate is OPTIONAL, and the live data is why.
+        # Same candidates, same 10% trail:
+        #   range + acceleration   n= 17   +19.1%
+        #   range only             n=130   +27.9%
+        # It removes 87% of trades AND lowers expectancy. Two days of filter
+        # building, and the simplest form of the rule beats all of it on
+        # seven times the sample.
+        #
+        # MEMEBOT_MIN_ACCEL=0 skips the gate entirely, including the paid
+        # lookup behind it. Acceleration is still RECORDED when computed, so
+        # the question stays open to evidence rather than closed here.
+        use_accel = MIN_ACCEL > 0
+        accel = (self.acceleration(mint, c.detected_ts)
+                 if (free_ok and use_accel) else None)
         vol2 = self._last_vol2
-        ok = (free_ok and accel is not None
-              and MIN_ACCEL <= accel < MAX_ACCEL
-              and (vol2 is None or vol2 >= MIN_SOL_VOL2))
+        ok = free_ok and (vol2 is None or vol2 >= MIN_SOL_VOL2)
+        if use_accel:
+            ok = ok and accel is not None and MIN_ACCEL <= accel < MAX_ACCEL
         self._journal(mint, rng, n, accel, ok)
         if not ok:
             log.info("skip %s: range %.1f%% samples %d accel %s "

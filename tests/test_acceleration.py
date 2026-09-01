@@ -262,8 +262,9 @@ def test_paid_calls_run_only_after_the_free_checks_pass():
     fn = src[src.index("def _decide_one"):src.index("def _enter")]
     assert fn.index("free_ok = ") < fn.index("self.acceleration("), \
         "the free checks must be evaluated before the paid call"
-    assert "if free_ok else None" in fn, \
-        "acceleration must be skipped entirely when the free checks fail"
+    assert "if (free_ok and use_accel) else None" in fn, \
+        "acceleration must be skipped when the free checks fail OR when the "\
+        "gate is disabled — both must avoid the paid call"
 
 
 def test_default_feed_costs_no_credits():

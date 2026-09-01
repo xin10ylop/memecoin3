@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import asyncio
 import logging
 import os
 import threading
@@ -139,3 +140,59 @@ class PortalLaunchFeed:
         now = time.time()
         return [e for e in list(self.events)
                 if now - e.detected_ts <= max_age_sec]
+
+
+MIGRATOR = "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg"
+
+
+class NarrowRpcFeed(PortalLaunchFeed):
+    """Helius logsSubscribe on the migration AUTHORITY, not the program.
+
+    Subscribing to the whole PumpSwap program delivered 772 messages a
+    second to keep 5 useful ones a minute -- 66.7 million a day, 0.011%
+    useful, and it drained a key in under a day. Narrowing the same
+    subscription to the single account that signs a graduation gives 888
+    messages a DAY, every one of them a real event: the same idea, 75,000x
+    cheaper. The firehose was never expensive because the data was
+    valuable; it was expensive because it was unfiltered.
+    """
+
+    def __init__(self, maxlen: int = 2000):
+        super().__init__(maxlen=maxlen)
+        self.ws_url = (os.environ.get("MEMEBOT_RPC_URL", "")
+                       .replace("https://", "wss://").replace("http://", "ws://"))
+
+    async def _run(self) -> None:
+        import websockets
+        backoff = 1.0
+        while self._running:
+            try:
+                async with websockets.connect(self.ws_url, ping_interval=20,
+                                              max_size=None) as ws:
+                    await ws.send(json.dumps({
+                        "jsonrpc": "2.0", "id": 1, "method": "logsSubscribe",
+                        "params": [{"mentions": [MIGRATOR]},
+                                   {"commitment": "processed"}]}))
+                    await ws.recv()
+                    log.info("narrow rpc feed connected (888 msgs/day)")
+                    backoff = 1.0
+                    while self._running:
+                        msg = json.loads(await ws.recv())
+                        v = (msg.get("params", {}).get("result", {})
+                             .get("value", {}))
+                        sig = v.get("signature")
+                        if not sig or sig in self._seen:
+                            continue
+                        self._seen.add(sig)
+                        # the mint is resolved by the scalper from the
+                        # signature, as the original websocket feed did
+                        self.events.append(
+                            PortalEvent(signature=sig, detected_ts=time.time(),
+                                        logs=v.get("logs") or []))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("narrow rpc feed dropped (%s); retry in %.0fs",
+                            e, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(30.0, backoff * 2)

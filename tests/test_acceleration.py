@@ -270,8 +270,15 @@ def test_default_feed_costs_no_credits():
     """The websocket streamed every PumpSwap transaction to keep the few
     that were pool creations. Polling must be the default."""
     src = open("src/memebot/live/scalper.py").read()
-    assert 'os.environ.get("MEMEBOT_FEED", "portal")' in src
-    assert "PortalLaunchFeed" in src
+    assert 'os.environ.get("MEMEBOT_FEED", "both")' in src
+    assert "MultiLaunchFeed" in src
+    # the whole-program subscription must never be the default again: it
+    # measured 772 messages/second, 66.7 million a day, 0.011% useful
+    default_block = src[src.index("feed_kind ="):src.index("self.safety")]
+    assert "RealtimeLaunchFeed()" in default_block, "kept, but opt-in only"
+    assert default_block.index("MultiLaunchFeed") > \
+        default_block.index("RealtimeLaunchFeed"), \
+        "the firehose must sit behind an explicit MEMEBOT_FEED=websocket"
 
 
 def test_billed_calls_are_hard_capped():

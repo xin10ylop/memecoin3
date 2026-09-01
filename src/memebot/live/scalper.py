@@ -211,16 +211,27 @@ class RealtimeScalper:
         # drawdown mean different things at those ages, so mixing them in
         # one dataset silently compares incomparable things. The shadow
         # test must be able to separate them.
-        feed_kind = os.environ.get("MEMEBOT_FEED", "portal")
+        feed_kind = os.environ.get("MEMEBOT_FEED", "both")
         self._feed_kind = feed_kind
         if feed_kind == "websocket":
             self.feed = RealtimeLaunchFeed()          # instant, expensive
         elif feed_kind == "poll":
             from .pollfeed import PollingLaunchFeed   # free, far too late
             self.feed = PollingLaunchFeed()
-        else:
-            from .portalfeed import PortalLaunchFeed  # instant AND free
+        elif feed_kind == "portal":
+            from .portalfeed import PortalLaunchFeed
             self.feed = PortalLaunchFeed()
+        else:
+            # Default: BOTH cheap feeds, union deduped by mint. PumpPortal
+            # appears to see roughly a fifth of what the firehose saw, and
+            # a narrow subscription to the migration authority costs 888
+            # messages a day. Running both covers more than either alone
+            # and records which feed found each candidate, so "which feed
+            # is better" becomes a query instead of an argument.
+            from .multifeed import MultiLaunchFeed
+            from .portalfeed import NarrowRpcFeed, PortalLaunchFeed
+            self.feed = MultiLaunchFeed({"portal": PortalLaunchFeed(),
+                                         "narrow": NarrowRpcFeed()})
         self.is_live = cfg.mode == "live" and live_trading_armed()
         self.executor = PaperExecutor(self.costs)
         if self.is_live:
@@ -598,7 +609,10 @@ class RealtimeScalper:
                  self._last_vol2,
                  self._last_buyers[0] if self._last_buyers else None,
                  self._last_buyers[1] if self._last_buyers else None,
-                 self._last_drawdown, self._last_drift, self._feed_kind))
+                 self._last_drawdown, self._last_drift,
+                 (self.feed.source_of(mint)
+                  if hasattr(self.feed, "source_of") else None)
+                 or self._feed_kind))
             self.state.db.commit()
         except Exception as e:
             # Never block a trade on journalling -- but never hide it

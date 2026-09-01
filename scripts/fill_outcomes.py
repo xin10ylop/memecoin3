@@ -116,8 +116,14 @@ def main() -> int:
         db = sqlite3.connect(DB, timeout=60)
         db.execute("PRAGMA busy_timeout=60000")
         cutoff = time.time() - SETTLE_MIN * 60
+        # Also pick up rows that HAVE an outcome but are missing the
+        # per-exit columns. Selecting only on "outcome IS NULL" meant every
+        # column added later stayed empty forever on existing rows -- the
+        # exit comparison reported zero candidates and looked like a lack
+        # of data rather than a backfill that never ran.
         todo = list(db.execute(
-            "SELECT mint FROM candidate_journal WHERE outcome IS NULL "
+            "SELECT mint FROM candidate_journal "
+            "WHERE (outcome IS NULL OR out_trail30 IS NULL) "
             "AND ts < ? ORDER BY ts DESC LIMIT 40", (cutoff,)))
         db.close()
         if not todo:

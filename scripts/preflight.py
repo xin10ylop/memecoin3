@@ -57,6 +57,12 @@ def main() -> int:
     # So print what is actually in force, and flag every value overridden
     # from its default. A wrong number here is findable in seconds; the
     # same wrong number invisible costs a day.
+    #
+    # These are the thresholds the CHECKS below use. They were hard-coded
+    # once and drifted from the service the moment a value was tuned, so
+    # the pass-rate line described a filter nobody was running. Defaults
+    # only apply if the config block fails outright.
+    cfg_range, cfg_accel, cfg_drawdown = 0.172, 1.0, 1.0
     try:
         # Read the SERVICE's environment file, not this process's. Preflight
         # runs as a separate command and never sources it, so reading
@@ -72,6 +78,8 @@ def main() -> int:
                 with open(path) as fh:
                     for line in fh:
                         line = line.strip()
+                        if line.startswith("export "):
+                            line = line[7:]
                         if line and not line.startswith("#") and "=" in line:
                             k, _, v = line.partition("=")
                             envfile[k.strip()] = v.strip().strip('"').strip("'")
@@ -100,6 +108,8 @@ def main() -> int:
             cur = envfile.get(k)
             mark = " *" if cur is not None and cur != dflt else "  "
             print(f"  {mark} {k:<28} {cur if cur is not None else dflt}")
+        cfg_range, cfg_accel, cfg_drawdown = (sc.MIN_RANGE, sc.MIN_ACCEL,
+                                              sc.MAX_DRAWDOWN)
         print(f"     thresholds in force        range>={sc.MIN_RANGE} "
               f"accel {sc.MIN_ACCEL}-{sc.MAX_ACCEL} "
               f"drawdown<={sc.MAX_DRAWDOWN} trail={sc.TRAIL}")
@@ -186,9 +196,10 @@ def main() -> int:
         db = sqlite3.connect(DB)
         cut = time.time() - 3600
         row = db.execute(
-            "SELECT COUNT(*), SUM(samples>=3 AND range_frac>=0.172 "
-            "AND drawdown<=0.10), SUM(accel IS NOT NULL), SUM(taken) "
-            "FROM candidate_journal WHERE ts > ?", (cut,)).fetchone()
+            "SELECT COUNT(*), SUM(samples>=3 AND range_frac>=? "
+            "AND drawdown<=?), SUM(accel IS NOT NULL), SUM(taken) "
+            "FROM candidate_journal WHERE ts > ?",
+            (cfg_range, cfg_drawdown, cut)).fetchone()
         cands, gate, accel, taken = (row[0] or 0, row[1] or 0,
                                      row[2] or 0, row[3] or 0)
         check("journal recording", OK if cands >= 5 else BAD,
@@ -197,7 +208,14 @@ def main() -> int:
               f"{gate}/{cands} cleared range+drawdown")
         # the failure that cost a full day: gate passed, acceleration never
         # computed, and every other indicator looked healthy
-        if gate > 0:
+        if cfg_accel <= 0:
+            # the gate is deliberately off, so zero readings is the healthy
+            # state, not a failing lookup. Reporting it red would send us
+            # chasing a bug in a system doing exactly what it was told.
+            check("acceleration gate", OK,
+                  "off by config — no paid lookups, entries decided on "
+                  "range alone")
+        elif gate > 0:
             ok = accel >= gate
             check("acceleration computed when gated", OK if ok else BAD,
                   f"{accel} readings for {gate} gated candidates"

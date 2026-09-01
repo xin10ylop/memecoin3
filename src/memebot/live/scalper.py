@@ -254,6 +254,7 @@ class RealtimeScalper:
         self._n = {"events": 0, "unresolved": 0, "watched": 0,
                    "decided": 0, "entered": 0, "failed": 0}
         self._last_buyers: tuple[int, int] | None = None
+        self._mint_feed: dict[str, str] = {}
         self._last_drift: float | None = None
         self._last_drawdown: float | None = None
         log.info("scalper up: mode=%s cash=%.2f positions=%d",
@@ -303,6 +304,11 @@ class RealtimeScalper:
             if mint in self.candidates or mint in self.positions:
                 continue
             self._n["watched"] += 1
+            if hasattr(self.feed, "source_of"):
+                src = (self.feed.source_of(getattr(ev, "signature", None))
+                       or self.feed.source_of(mint))
+                if src:
+                    self._mint_feed[mint] = src
             self.candidates[mint] = Candidate(mint, ev.detected_ts)
             log.info("watching %s (detected %.0fs ago)", mint[:10],
                      time.time() - ev.detected_ts)
@@ -610,9 +616,7 @@ class RealtimeScalper:
                  self._last_buyers[0] if self._last_buyers else None,
                  self._last_buyers[1] if self._last_buyers else None,
                  self._last_drawdown, self._last_drift,
-                 (self.feed.source_of(mint)
-                  if hasattr(self.feed, "source_of") else None)
-                 or self._feed_kind))
+                 self._mint_feed.get(mint) or self._feed_kind))
             self.state.db.commit()
         except Exception as e:
             # Never block a trade on journalling -- but never hide it
@@ -783,6 +787,11 @@ class RealtimeScalper:
                              "trades=%d pnl=%.2f", self.equity(),
                              len(self.candidates), len(self.positions),
                              s["n_trades"], s["total_pnl_usd"])
+                    if hasattr(self.feed, "alive"):
+                        log.info("feeds: %s", ", ".join(
+                            f"{k}={v['events']}"
+                            + ("(DEAD)" if v["error"] else "")
+                            for k, v in self.feed.alive().items()))
                     log.info("funnel: events=%d unresolved=%d watched=%d "
                              "decided=%d entered=%d failed=%d "
                              "(reaching a decision: %.0f%%)",

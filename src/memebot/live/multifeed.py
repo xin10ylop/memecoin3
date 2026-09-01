@@ -49,8 +49,22 @@ class MultiLaunchFeed:
             except Exception:
                 pass
 
-    def source_of(self, mint: str) -> str | None:
-        return self._first_seen.get(mint)
+    def source_of(self, key: str | None) -> str | None:
+        """Look up by mint OR signature, since feeds identify events
+        differently and one of them has no mint until later."""
+        return self._first_seen.get(key) if key else None
+
+    def alive(self) -> dict:
+        """Per-feed liveness, so a silent feed is visible rather than
+        merely absent from the attribution table."""
+        out = {}
+        for name, f in self.feeds.items():
+            try:
+                out[name] = {"events": len(getattr(f, "events", [])),
+                             "error": getattr(f, "thread_error", None)}
+            except Exception:
+                out[name] = {"events": -1, "error": "unreadable"}
+        return out
 
     def recent(self, max_age_sec: float = 900) -> list:
         """Union across feeds, first sighting wins.
@@ -76,7 +90,14 @@ class MultiLaunchFeed:
                 if not key or key in seen:
                     continue
                 seen.add(key)
-                if mint and mint not in self._first_seen:
-                    self._first_seen[mint] = name
+                # Attribute by whatever key identifies the event. The
+                # narrow feed yields only a SIGNATURE -- its mint is
+                # resolved later, in the scalper -- so keying attribution
+                # on mint alone made that feed permanently invisible: it
+                # could be delivering launches and still show zero rows.
+                sig = getattr(ev, "signature", None)
+                for k in (mint, sig):
+                    if k and k not in self._first_seen:
+                        self._first_seen[k] = name
                 out.append(ev)
         return out

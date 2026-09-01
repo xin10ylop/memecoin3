@@ -58,8 +58,35 @@ def main() -> int:
     # from its default. A wrong number here is findable in seconds; the
     # same wrong number invisible costs a day.
     try:
+        # Read the SERVICE's environment file, not this process's. Preflight
+        # runs as a separate command and never sources it, so reading
+        # os.environ showed defaults and labelled them current -- a config
+        # display that could not see a config change is precisely the blind
+        # spot this section exists to remove, and I built it with that spot
+        # intact. MEMEBOT_MIN_ACCEL=0 was set, the service used it, and this
+        # screen still printed 1.0.
+        envfile = {}
+        for path in ("/etc/memebot/secrets.env",
+                     os.path.join(REPO, "data", "secrets.env")):
+            try:
+                with open(path) as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, _, v = line.partition("=")
+                            envfile[k.strip()] = v.strip().strip('"').strip("'")
+                break
+            except OSError:
+                continue
+
         sys.path.insert(0, os.path.join(REPO, "src"))
+        # import the module with the SERVICE's values in place, so the
+        # thresholds printed are the ones actually in force
+        for k, v in envfile.items():
+            os.environ.setdefault(k, v)
         import memebot.live.scalper as sc
+        import importlib
+        importlib.reload(sc)
         defaults = {"MEMEBOT_FEED": "both", "MEMEBOT_MIN_RANGE": "0.172",
                     "MEMEBOT_MIN_ACCEL": "1.0", "MEMEBOT_MAX_ACCEL": "10.0",
                     "MEMEBOT_MAX_DRAWDOWN": "1.0",
@@ -67,9 +94,10 @@ def main() -> int:
                     "MEMEBOT_HELIUS_HOURLY_CAP": "200",
                     "MEMEBOT_TRAIL": "0.10"}
         print()
-        print("effective configuration (* = overridden from default)")
+        print(f"effective configuration, read from the SERVICE env file "
+              f"({len(envfile)} vars)  * = overridden")
         for k, dflt in defaults.items():
-            cur = os.environ.get(k)
+            cur = envfile.get(k)
             mark = " *" if cur is not None and cur != dflt else "  "
             print(f"  {mark} {k:<28} {cur if cur is not None else dflt}")
         print(f"     thresholds in force        range>={sc.MIN_RANGE} "

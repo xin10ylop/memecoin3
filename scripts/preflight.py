@@ -20,6 +20,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB = os.path.join(REPO, "data", "scalp.db")
@@ -241,6 +242,23 @@ def main() -> int:
         trades = (0, 0)
 
     # 6. nothing is quietly capped or erroring
+    # A daily-loss halt stops entries until UTC midnight while every other
+    # indicator stays green. Confirmed firing three times in two days, with
+    # nothing reporting it: the screen said "healthy end to end, trades
+    # flowing" at a moment the bot could not take a trade at all.
+    today = journal("memebot-scalper",
+                    since=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    halts = today.count("DAILY LOSS LIMIT")
+    resets = today.count("daily loss halt reset")
+    if halts > resets:
+        check("daily loss halt", BAD,
+              "HALTED for the rest of the UTC day — no entries are "
+              "possible until midnight, whatever the rest of this says")
+    else:
+        check("daily loss halt", OK,
+              "not halted" if not halts else
+              f"{halts} halt(s) earlier, since reset")
+
     capped = log.count("hourly cap")
     check("credit budget", OK if capped == 0 else WARN,
           "not capped" if capped == 0 else f"cap hit {capped}x")

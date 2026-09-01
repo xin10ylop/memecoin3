@@ -274,7 +274,7 @@ def test_default_feed_costs_no_credits():
     assert "MultiLaunchFeed" in src
     # the whole-program subscription must never be the default again: it
     # measured 772 messages/second, 66.7 million a day, 0.011% useful
-    default_block = src[src.index("feed_kind ="):src.index("self.safety")]
+    default_block = src[src.index("feed_kind ="):src.index("self.is_live =")]
     assert "RealtimeLaunchFeed()" in default_block, "kept, but opt-in only"
     assert default_block.index("MultiLaunchFeed") > \
         default_block.index("RealtimeLaunchFeed"), \

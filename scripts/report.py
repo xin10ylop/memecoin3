@@ -105,10 +105,29 @@ def main() -> int:
     scored = ecol if ecol in have else (tcol if tcol in have else "outcome")
     basis = ("prices a seller could have met" if scored == ecol
              else "BAR HIGHS — inflated, see research/peak_reality.py")
+    # PAIRED, or not at all. The backfill skips a mint whose pool has
+    # vanished from the aggregator -- which is precisely the coins that
+    # died -- so the exec columns fill for survivors first. Ranking exec
+    # over a survivor subset while remembering trail numbers from the full
+    # one would flatter exec by exactly the deaths it is missing. So every
+    # row in this table carries BOTH scores or neither.
+    paired = where
+    if scored == ecol and tcol in have:
+        paired = f"{where} AND {ecol} IS NOT NULL AND {tcol} IS NOT NULL"
     j = list(d.execute(
         "SELECT range_frac, accel, vol2, buyers_m1, buyers_m2, drawdown, "
         f"drift, {scored}, {tcol if tcol in have else 'NULL'} "
-        f"FROM candidate_journal {where}"))
+        f"FROM candidate_journal {paired}"))
+    if scored == ecol:
+        tot = d.execute("SELECT COUNT(*) FROM candidate_journal "
+                        f"{where}").fetchone()[0]
+        cov = len(j) / tot if tot else 0.0
+        print(f"honest scoring covers {len(j)}/{tot} settled candidates "
+              f"({cov:.0%})"
+              + ("" if cov >= 0.8 else
+                 " — BELOW 80%: the backfill is still running, or the "
+                 "missing rows are dead pools the aggregator has dropped, "
+                 "which would bias this table optimistic"))
     if len(feeds) > 1 and live:
         print(f"feeds present in the journal: {', '.join(sorted(feeds))} "
               f"-- analysing the real-time feeds ({', '.join(live)}) only, "

@@ -123,11 +123,27 @@ def main() -> int:
                         f"{where}").fetchone()[0]
         cov = len(j) / tot if tot else 0.0
         print(f"honest scoring covers {len(j)}/{tot} settled candidates "
-              f"({cov:.0%})"
-              + ("" if cov >= 0.8 else
-                 " — BELOW 80%: the backfill is still running, or the "
-                 "missing rows are dead pools the aggregator has dropped, "
-                 "which would bias this table optimistic"))
+              f"({cov:.0%})")
+        if cov < 0.8:
+            # "wait longer" and "this is as good as it gets" need different
+            # responses, so say which one applies instead of leaving it to
+            # be guessed at.
+            gone = pending = None
+            if "outcome_tries" in have:
+                gone, pending = d.execute(
+                    "SELECT SUM(COALESCE(outcome_tries,0) >= 3), "
+                    "SUM(COALESCE(outcome_tries,0) < 3) "
+                    f"FROM candidate_journal {where} "
+                    f"AND {ecol} IS NULL").fetchone()
+            print(f"  BELOW 80% — do not rank rules on this table yet.")
+            if pending:
+                print(f"  {pending} rows still to backfill: wait, then rerun.")
+            if gone:
+                print(f"  {gone} rows given up on (pool dropped by the "
+                      f"aggregator). Those skew dead — what is left is "
+                      f"optimistic by however many of them died.")
+            if not pending:
+                print("  nothing left to fetch; this coverage is final.")
     if len(feeds) > 1 and live:
         print(f"feeds present in the journal: {', '.join(sorted(feeds))} "
               f"-- analysing the real-time feeds ({', '.join(live)}) only, "

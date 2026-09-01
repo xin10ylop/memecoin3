@@ -92,7 +92,14 @@ class StateStore:
                           # bar-high scoring overstates by 47 points, so
                           # these are the columns to rank rules with.
                           ("out_exec30", "REAL"), ("out_exec15", "REAL"),
-                          ("out_exec10", "REAL")):
+                          ("out_exec10", "REAL"),
+                          # how many times the backfill has tried and failed
+                          # on this row. Without it a permanently unscoreable
+                          # row -- pool gone from the aggregator, no bars --
+                          # is re-selected every pass forever, and since the
+                          # batch is the NEWEST 40, those rows pile up at the
+                          # top until nothing else is ever reached.
+                          ("outcome_tries", "INTEGER DEFAULT 0")):
             if col not in jcols:
                 self.db.execute(
                     f"ALTER TABLE candidate_journal ADD COLUMN {col} {decl}")

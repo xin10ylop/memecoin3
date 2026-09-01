@@ -31,6 +31,21 @@ log = logging.getLogger("outcomes")
 DB = "data/scalp.db"
 COST, DEAD_RECOVERY, TRAIL, HORIZON = 0.016, 0.10, 0.30, 30
 SETTLE_MIN = 40          # a 30-minute hold plus slack before judging
+MAX_TRIES = 3            # attempts before a row is written off as unscoreable
+
+
+def bump(mint: str) -> None:
+    """Record that this row was attempted, so a permanently unscoreable one
+    cannot occupy the batch forever."""
+    try:
+        db = sqlite3.connect(DB, timeout=60)
+        db.execute("PRAGMA busy_timeout=60000")
+        db.execute("UPDATE candidate_journal SET outcome_tries = "
+                   "COALESCE(outcome_tries, 0) + 1 WHERE mint = ?", (mint,))
+        db.commit()
+        db.close()
+    except sqlite3.Error as e:
+        log.warning("could not record attempt for %s: %s", mint[:10], e)
 
 
 # Every exit rule worth comparing, scored on the SAME coins.
@@ -157,17 +172,24 @@ def main() -> int:
         # column added later stayed empty forever on existing rows -- the
         # exit comparison reported zero candidates and looked like a lack
         # of data rather than a backfill that never ran.
+        # Give up on a row after MAX_TRIES. A pool the aggregator has
+        # dropped can never be scored, and without this the newest such rows
+        # are re-selected every pass, accumulate at the head of the DESC
+        # ordering, and eventually fill the batch so the backfill spins on
+        # them and coverage freezes short of an answer.
         todo = list(db.execute(
             "SELECT mint, ts FROM candidate_journal "
             "WHERE (outcome IS NULL OR out_trail30 IS NULL "
             "OR out_exec10 IS NULL) "
-            "AND ts < ? ORDER BY ts DESC LIMIT 40", (cutoff,)))
+            "AND COALESCE(outcome_tries, 0) < ? "
+            "AND ts < ? ORDER BY ts DESC LIMIT 40", (MAX_TRIES, cutoff)))
         db.close()
         if not todo:
             time.sleep(300)
             continue
         done = 0
         for mint, det_ts in todo:
+            bump(mint)          # count the attempt BEFORE it can fail
             try:
                 pools = gt.token_pools(mint)
                 if not pools:

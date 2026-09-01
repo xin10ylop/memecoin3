@@ -217,10 +217,20 @@ def main() -> int:
                   "off by config — no paid lookups, entries decided on "
                   "range alone")
         elif gate > 0:
-            ok = accel >= gate
-            check("acceleration computed when gated", OK if ok else BAD,
-                  f"{accel} readings for {gate} gated candidates"
-                  + ("" if ok else " — paid lookup is failing"))
+            # Not an equality. The two counts are taken over the same hour
+            # but describe different sets: a candidate gated at 13:59 gets
+            # its reading at 14:01, and a pool that never traded has no
+            # acceleration to read. At n=5 one boundary case is a 20%
+            # "shortfall", and a check that fails on that gets ignored --
+            # which costs more than the check ever saved. Only a material
+            # shortfall means the paid lookup is actually broken.
+            frac = accel / gate
+            status = OK if frac >= 0.9 else (WARN if frac >= 0.6 else BAD)
+            note = {OK: "", WARN: " — slightly behind; window edge or a "
+                                  "pool with no trades",
+                    BAD: " — paid lookup is failing"}[status]
+            check("acceleration computed when gated", status,
+                  f"{accel} readings for {gate} gated candidates{note}")
         else:
             check("acceleration computed when gated", WARN,
                   "nothing reached the paid check this hour")

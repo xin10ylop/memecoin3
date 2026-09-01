@@ -31,7 +31,6 @@ log = logging.getLogger("outcomes")
 DB = "data/scalp.db"
 COST, DEAD_RECOVERY, TRAIL, HORIZON = 0.016, 0.10, 0.30, 30
 SETTLE_MIN = 40          # a 30-minute hold plus slack before judging
-MAX_TRIES = 3            # attempts before a row is written off as unscoreable
 
 
 def bump(mint: str) -> None:
@@ -172,17 +171,27 @@ def main() -> int:
         # column added later stayed empty forever on existing rows -- the
         # exit comparison reported zero candidates and looked like a lack
         # of data rather than a backfill that never ran.
-        # Give up on a row after MAX_TRIES. A pool the aggregator has
-        # dropped can never be scored, and without this the newest such rows
-        # are re-selected every pass, accumulate at the head of the DESC
-        # ordering, and eventually fill the batch so the backfill spins on
-        # them and coverage freezes short of an answer.
+        # DEPRIORITISE a row that keeps failing; never exclude it.
+        #
+        # The first version of this excluded rows after three attempts, to
+        # stop unscoreable ones occupying the newest-first batch forever.
+        # That solved a THROUGHPUT problem with an IRREVERSIBLE action, and
+        # the two failure modes are not comparable: a slow backfill costs
+        # hours and recovers on its own, a discarded row is gone and takes a
+        # confident explanation with it ("pool dropped by the aggregator").
+        # It also fired hardest under rate limiting, when nothing was wrong
+        # with the rows at all.
+        #
+        # Ordering by attempts achieves the same throughput -- rows that
+        # keep failing sink behind everything worth trying -- and the worst
+        # case becomes "slower than hoped" rather than "data gone".
         todo = list(db.execute(
             "SELECT mint, ts FROM candidate_journal "
             "WHERE (outcome IS NULL OR out_trail30 IS NULL "
             "OR out_exec10 IS NULL) "
-            "AND COALESCE(outcome_tries, 0) < ? "
-            "AND ts < ? ORDER BY ts DESC LIMIT 40", (MAX_TRIES, cutoff)))
+            "AND ts < ? "
+            "ORDER BY COALESCE(outcome_tries, 0) ASC, ts DESC LIMIT 40",
+            (cutoff,)))
         db.close()
         if not todo:
             time.sleep(300)

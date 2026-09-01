@@ -186,10 +186,11 @@ def main() -> int:
             if pending:
                 print(f"  {pending} rows still to backfill: wait, then rerun.")
             if gone:
-                print(f"  {gone} rows given up on (pool dropped by the "
-                      f"aggregator). Those skew dead — what is left is "
-                      f"optimistic by however many of them died.")
-            if not pending:
+                print(f"  {gone} rows have failed 3+ times and now sit at "
+                      f"the back of the queue — still retried, never "
+                      f"discarded. Mostly pools the aggregator has dropped, "
+                      f"which skew dead, so what IS scored runs optimistic.")
+            if not pending and not gone:
                 print("  nothing left to fetch; this coverage is final.")
     if len(feeds) > 1 and live:
         print(f"feeds present in the journal: {', '.join(sorted(feeds))} "

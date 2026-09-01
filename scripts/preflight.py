@@ -64,7 +64,8 @@ def main() -> int:
                     "MEMEBOT_MIN_ACCEL": "1.0", "MEMEBOT_MAX_ACCEL": "10.0",
                     "MEMEBOT_MAX_DRAWDOWN": "1.0",
                     "MEMEBOT_PORTAL_STREAM": "migration",
-                    "MEMEBOT_HELIUS_HOURLY_CAP": "200"}
+                    "MEMEBOT_HELIUS_HOURLY_CAP": "200",
+                    "MEMEBOT_TRAIL": "0.10"}
         print()
         print("effective configuration (* = overridden from default)")
         for k, dflt in defaults.items():
@@ -73,7 +74,7 @@ def main() -> int:
             print(f"  {mark} {k:<28} {cur if cur is not None else dflt}")
         print(f"     thresholds in force        range>={sc.MIN_RANGE} "
               f"accel {sc.MIN_ACCEL}-{sc.MAX_ACCEL} "
-              f"drawdown<={sc.MAX_DRAWDOWN}")
+              f"drawdown<={sc.MAX_DRAWDOWN} trail={sc.TRAIL}")
         print()
     except Exception as e:
         print(f"  (could not read effective config: {e})")

@@ -125,7 +125,30 @@ MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
                        # brand-new mints, so demanding 6 samples was
                        # rejecting QUALIFYING signals (28.8% range, 27.5%
                        # range) for our feed's reliability, not the token's
-TRAIL = 0.30
+# Trail width, and the live data changed it from 30% to 10%.
+#
+# Scored on the SAME 13 candidates the live rule bought:
+#   trail10  +27.4%    trail15 +22.5%    trail30  +5.4%
+#   tp1.5x   -16.7%    tp2x    -57.1%
+#   time10   -49.4%    time30  -74.8%
+#
+# Three findings, all consistent. Tighter trails win MONOTONICALLY, which
+# is far more convincing than one winner. Take-profits are terrible because
+# the winners run well past 2x and capping them destroys the edge. Timed
+# exits are worst of all: these coins decay, so exit on weakness, never on
+# a clock.
+#
+# The bar-scored numbers flatter trails -- they are credited with peaks a
+# live bot may never sample -- but they flatter them UNEQUALLY, and that
+# asymmetry is the argument. Measured yesterday on historical bars: a 30%
+# trail loses 44pp to realistic observation, a 10% trail loses 8pp. Live
+# confirmed it exactly -- bar-scored trail30 was +5.4% and delivered
+# -19.4%. A tight trail barely depends on seeing the exact peak, so
+# trail10's +27.4% should survive at roughly +19%.
+#
+# Configurable, because this is a live estimate on 13 trades and will be
+# revisited as the sample grows.
+TRAIL = float(os.environ.get("MEMEBOT_TRAIL", "0.10"))
 MAX_HOLD_MIN = 30
 # Fills are priced from Jupiter quotes, which already contain the real
 # slippage for our size. Passing an unknown reserve made the cost model

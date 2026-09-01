@@ -22,10 +22,29 @@ at a median 2.4 minutes old. So the signal is real but unreachable through
 the normal feed. Helius streams creations in seconds, which is what makes
 it executable at all.
 
-Pipeline: Helius creation stream -> resolve signature to token mint ->
-batch-poll Jupiter prices (one call covers every watched mint) -> compute
-range/activity over the observation window -> safety gate -> paper or live
-buy -> trail 30%, hard cap 30 minutes.
+Pipeline: PumpPortal subscribeMigration + a narrow migration-authority RPC
+subscription -> resolve to token mint -> batch-poll Jupiter prices (one call
+covers every watched mint) -> compute range/activity over the observation
+window -> safety gate -> paper or live buy -> trail, hard cap 30 minutes.
+
+TWO DEVIATIONS FROM THE FINDING ABOVE, both deliberate, both stated so a
+reader is never misled about what is validated:
+
+  1. EXIT. The +41.6% was validated at a 30% trail. This runs a 10% trail.
+     Tighter trails win monotonically on the same candidates AND survive
+     executable (non-bar-high) re-scoring (research/wick_census.py), but the
+     10% figure is NOT walk-forward OOS validated to the standard the 30%
+     was. It is the best current estimate, not a proven pick.
+
+  2. POPULATION. The finding was validated on a GeckoTerminal harvest of
+     new pools. The live feed samples pump.fun MIGRATIONS, which may not be
+     the same population -- filters validated on the harvest have already
+     failed to transfer once. Whether the edge survives here is the open
+     question the exec-scored journal exists to answer, not a settled fact.
+
+The env vars (MEMEBOT_MIN_ACCEL, MEMEBOT_MAX_DRAWDOWN, MEMEBOT_TRAIL, ...)
+default to the validated rule; they exist so evidence can revise it, and
+the defaults are the source of truth if no env file is present.
 """
 from __future__ import annotations
 
@@ -110,16 +129,21 @@ MIN_SOL_VOL2 = 0.5     # total SOL swapped in the first two minutes
 #   5-10%  n=10  2x 0.0%  mean +2.5%
 #   10-20% n=27  2x 0.0%  mean -1.6%
 #   20-40% n=35  2x 2.9%  mean +1.4%
-#   >40%   n=116 2x 6.9%  mean +10.8%   <- the bucket we rejected hardest
-# It was passing 3 of 42 candidates an hour, which projects to ZERO trades
-# overnight: a night that cannot produce ten trades teaches nothing.
+#   >40%   n=116 2x 6.9%  mean +10.8%
+# The clean-chart filter (enter only within ~10% of the window high) was
+# the STRONGEST single filter in the original validation: OR 3.25 OOS,
+# p=0.0404, and it survived the observation discount that gutted the others.
 #
-# This is NOT a claim that the filter is wrong -- it was significant on the
-# historical sample (OR 3.44, p=0.025). It is a claim that it is unproven
-# HERE and is currently the only thing preventing us from finding out.
-# Drawdown is still recorded on every candidate, so the shadow test can
-# judge it against real outcomes rather than against my expectations.
-MAX_DRAWDOWN = float(os.environ.get("MEMEBOT_MAX_DRAWDOWN", "1.0"))
+# It was turned off mid-session (default 1.0) to raise the trade rate, on a
+# shadow test that ranked rules by bar HIGHS. That scoring is now known to
+# overstate this population by ~47pp (research/peak_reality.py), and when
+# the same candidates are re-scored on prices a seller could actually meet,
+# the clean-chart subset carries the entire edge (+65.8% vs -4.5% for the
+# spiky rejects, research/wick_census.py). So the removal argument was an
+# artefact, and the default is back to the validated value. The env knob
+# stays so the exec-scored journal can still overrule this with evidence,
+# never with a bar-high number.
+MAX_DRAWDOWN = float(os.environ.get("MEMEBOT_MAX_DRAWDOWN", "0.10"))
 MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
                        # Jupiter's batch price call intermittently omits
                        # brand-new mints, so demanding 6 samples was
@@ -404,17 +428,21 @@ class RealtimeScalper:
         self._last_drift = c.drift()
         free_ok = (n >= MIN_SAMPLES and rng >= MIN_RANGE
                    and drawdown is not None and drawdown <= MAX_DRAWDOWN)
-        # The acceleration gate is OPTIONAL, and the live data is why.
-        # Same candidates, same 10% trail:
-        #   range + acceleration   n= 17   +19.1%
-        #   range only             n=130   +27.9%
-        # It removes 87% of trades AND lowers expectancy. Two days of filter
-        # building, and the simplest form of the rule beats all of it on
-        # seven times the sample.
+        # The acceleration gate is env-configurable, and its status is
+        # genuinely OPEN -- do not read the knob as a verdict.
         #
-        # MEMEBOT_MIN_ACCEL=0 skips the gate entirely, including the paid
-        # lookup behind it. Acceleration is still RECORDED when computed, so
-        # the question stays open to evidence rather than closed here.
+        # The original validation MADE the rule with it: range alone was
+        # -11.3%, and requiring acceleration turned it into +37.0% (n=130,
+        # OOS +19.3%, beats a random subset p=0.012). Mid-session a live
+        # shadow test ranked "range only" above "range + acceleration" and
+        # the gate was dropped -- but that test scored on bar highs, which
+        # this population inflates by ~47pp, so the comparison it rested on
+        # was not real. The gate is therefore RESTORED to the validated
+        # default (MEMEBOT_MIN_ACCEL=1.0), and whether it earns its place on
+        # the LIVE migration population is exactly what the exec-scored
+        # journal now measures. MEMEBOT_MIN_ACCEL=0 skips it (and the paid
+        # lookup); acceleration is still recorded either way, so the
+        # question stays open to honest evidence, never closed here.
         use_accel = MIN_ACCEL > 0
         accel = (self.acceleration(mint, c.detected_ts)
                  if (free_ok and use_accel) else None)

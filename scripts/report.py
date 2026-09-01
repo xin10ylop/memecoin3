@@ -9,14 +9,27 @@ every number next to what was expected of it.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _svcenv
+
 DB = sys.argv[1] if len(sys.argv) > 1 else "data/scalp.db"
 EXPECT = {"2x": 0.29, "death": 0.18, "win": 0.35, "mean": 1.24}
+
+# The thresholds the SERVICE is running. Hard-coding them here is how the
+# shadow table came to score every rule under a 30% trail while the bot ran
+# a 10% one, and to tag a rule "(LIVE)" months after it stopped being live.
+try:
+    _sc, _ = _svcenv.load_scalper()
+    MIN_RANGE, MIN_ACCEL, TRAIL = _sc.MIN_RANGE, _sc.MIN_ACCEL, _sc.TRAIL
+except Exception:
+    MIN_RANGE, MIN_ACCEL, TRAIL = 0.172, 1.0, 0.10
 
 
 def main() -> int:
@@ -64,46 +77,85 @@ def main() -> int:
             "WHERE outcome IS NOT NULL")]
     except sqlite3.Error:
         feeds = []
-    # Only the current feed's candidates are comparable. Rows from the
-    # polling feed were observed 4-11 minutes into a launch instead of
-    # seconds, so their range and drawdown describe a different animal.
-    # Strictly the real-time feed. An earlier version admitted NULL rows
-    # too, which readmitted every poll-era candidate it was meant to
-    # exclude -- the filter looked right and did nothing.
-    has_tagged = any(f == "portal" for f in feeds)
-    where = ("WHERE outcome IS NOT NULL AND feed = 'portal'"
-             if has_tagged else "WHERE outcome IS NOT NULL")
+    # Only real-time feeds are comparable. Rows from the polling feed were
+    # observed 4-11 minutes into a launch instead of seconds, so their range
+    # and drawdown describe a different animal. An earlier version admitted
+    # NULL rows too, which readmitted every poll-era candidate it was meant
+    # to exclude -- the filter looked right and did nothing. A later one
+    # named only 'portal' and so silently dropped every 'narrow' row once
+    # that second real-time feed went live.
+    REALTIME = ("portal", "narrow")
+    live = [f for f in REALTIME if f in feeds]
+    where = ("WHERE outcome IS NOT NULL AND feed IN "
+             f"({','.join(repr(f) for f in live)})" if live
+             else "WHERE outcome IS NOT NULL")
+    # Judge on the exit that is actually deployed. Reading 'outcome' scored
+    # every rule under the old 30% trail while the bot ran a 10% one, so the
+    # table described a system nobody was running.
+    # Fall back if no column matches the deployed trail (a trail nobody has
+    # backfilled yet must not take the whole table down with it).
+    have = {r[1] for r in d.execute("PRAGMA table_info(candidate_journal)")}
+    col = f"out_trail{int(round(TRAIL * 100))}"
+    scored = (f"COALESCE({col}, outcome)" if col in have else "outcome")
+    if col not in have:
+        print(f"(no {col} column — scoring on the recorded outcome instead)")
     j = list(d.execute(
         "SELECT range_frac, accel, vol2, buyers_m1, buyers_m2, drawdown, "
-        f"drift, outcome FROM candidate_journal {where}"))
-    if len(feeds) > 1 and has_tagged:
+        f"drift, {scored} FROM candidate_journal {where}"))
+    if len(feeds) > 1 and live:
         print(f"feeds present in the journal: {', '.join(sorted(feeds))} "
-              f"-- analysing the real-time feed only, since a launch "
-              f"observed minutes late is not the same observation")
-    print(f"comparable candidates with a settled outcome: {len(j)}")
+              f"-- analysing the real-time feeds ({', '.join(live)}) only, "
+              f"since a launch observed minutes late is not the same "
+              f"observation")
+    print(f"comparable candidates with a settled outcome: {len(j)}   "
+          f"(scored on the deployed {TRAIL:.0%} trailing exit)")
     if len(j) < 20:
         print("(need ~20+ before any comparison means anything)")
     else:
         import pandas as pd
         c = pd.DataFrame(j, columns=["range", "accel", "vol2", "b1", "b2",
                                      "dd", "drift", "ret"])
-        c = c[c["range"] >= 0.172]
+        c = c[(c["range"] >= MIN_RANGE) & c.ret.notna()]
         vol = c.accel.between(1.0, 10.0, inclusive="left")
         clean = c.dd <= 0.10
         up = c.drift.between(0.10, 0.50, inclusive="left")
         bre = (c.b2 / c.b1.clip(lower=1)) >= 1.0
-        print(f"{'rule':<26} {'n':>4} {'2x':>6} {'death':>7} {'mean':>9}")
-        for lab, m in [("range only", pd.Series(True, index=c.index)),
-                       ("+ volume", vol),
-                       ("+ clean chart (LIVE)", vol & clean),
-                       ("+ upward drift", vol & clean & up),
-                       ("+ buyer breadth", vol & clean & bre)]:
+        allrows = pd.Series(True, index=c.index)
+        # Mark the rule the service is ACTUALLY running. This line used to
+        # be pinned to '+ clean chart', which stopped being true the moment
+        # the gates were turned off -- and a stale (LIVE) tag is worse than
+        # none, because it is read as confirmation.
+        gated = MIN_ACCEL > 0
+        rules = [("range only", allrows),
+                 ("+ acceleration", vol),
+                 ("+ low drawdown (death filter)", clean),
+                 ("+ both gates", vol & clean),
+                 ("+ upward drift", vol & clean & up),
+                 ("+ buyer breadth", vol & clean & bre)]
+        live_label = "+ both gates" if gated else "range only"
+        print(f"{'rule':<30} {'n':>4} {'2x':>6} {'death':>7} {'mean':>9}")
+        for lab, m in rules:
             g = c[m]
+            tag = "  <-- LIVE" if lab == live_label else ""
             if len(g) < 3:
-                print(f"{lab:<26} {len(g):>4}   (too few)")
+                print(f"{lab:<30} {len(g):>4}   (too few){tag}")
                 continue
-            print(f"{lab:<26} {len(g):>4} {(g.ret>=1).mean():>5.0%} "
-                  f"{(g.ret<=-0.85).mean():>6.0%} {g.ret.mean():>+8.1%}")
+            print(f"{lab:<30} {len(g):>4} {(g.ret>=1).mean():>5.0%} "
+                  f"{(g.ret<=-0.85).mean():>6.0%} {g.ret.mean():>+8.1%}{tag}")
+
+        # What do the deaths actually cost? The gates were built to dodge
+        # them, so the honest question is what is left to dodge.
+        base = c
+        dead = base[base.ret <= -0.85]
+        if len(base) >= 20:
+            drag = base.ret.mean() - base[base.ret > -0.85].ret.mean()
+            print()
+            print(f"deaths in the traded population: {len(dead)}/{len(base)} "
+                  f"({len(dead)/len(base):.0%}), dragging the mean by "
+                  f"{drag:+.1%}")
+            print(f"without them the mean would be "
+                  f"{base[base.ret > -0.85].ret.mean():+.1%} — so deaths "
+                  f"are {'the main problem' if abs(drag) > abs(base.ret.mean()) else 'not what decides this'}")
     print()
     subprocess.run([sys.executable, "scripts/audit_trades.py", DB])
     return 0

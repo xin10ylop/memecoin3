@@ -90,6 +90,12 @@ echo "http://\$ip:8080/\$MEMEBOT_WEB_TOKEN"
 URL
 chmod +x /usr/local/bin/memebot-url
 
+cat > /usr/local/bin/memebot-preflight <<PRE
+#!/usr/bin/env bash
+cd "$REPO_DIR" && exec "$REPO_DIR/.venv/bin/python3" scripts/preflight.py
+PRE
+chmod +x /usr/local/bin/memebot-preflight
+
 systemctl daemon-reload
 systemctl enable memebot-scalper memebot-outcomes memebot-web
 echo

@@ -45,6 +45,39 @@ def main() -> int:
     print("PREFLIGHT — will this produce trades overnight?")
     print("=" * 64)
 
+    # EFFECTIVE CONFIGURATION.
+    #
+    # Most of today's lost hours were not logic errors: a stale
+    # MEMEBOT_FEED=portal silently disabled a second feed; a column added
+    # to CREATE TABLE was never ALTERed onto the live database; a backfill
+    # query could not pick up columns added after a row existed. In every
+    # case the code was right and the RUNNING SYSTEM was configured
+    # differently from what I was reasoning about, with no visible symptom.
+    #
+    # So print what is actually in force, and flag every value overridden
+    # from its default. A wrong number here is findable in seconds; the
+    # same wrong number invisible costs a day.
+    try:
+        sys.path.insert(0, os.path.join(REPO, "src"))
+        import memebot.live.scalper as sc
+        defaults = {"MEMEBOT_FEED": "both", "MEMEBOT_MIN_RANGE": "0.172",
+                    "MEMEBOT_MIN_ACCEL": "1.0", "MEMEBOT_MAX_ACCEL": "10.0",
+                    "MEMEBOT_MAX_DRAWDOWN": "1.0",
+                    "MEMEBOT_PORTAL_STREAM": "migration",
+                    "MEMEBOT_HELIUS_HOURLY_CAP": "200"}
+        print()
+        print("effective configuration (* = overridden from default)")
+        for k, dflt in defaults.items():
+            cur = os.environ.get(k)
+            mark = " *" if cur is not None and cur != dflt else "  "
+            print(f"  {mark} {k:<28} {cur if cur is not None else dflt}")
+        print(f"     thresholds in force        range>={sc.MIN_RANGE} "
+              f"accel {sc.MIN_ACCEL}-{sc.MAX_ACCEL} "
+              f"drawdown<={sc.MAX_DRAWDOWN}")
+        print()
+    except Exception as e:
+        print(f"  (could not read effective config: {e})")
+
     # 1. the deployed code is the code we think it is. A tar flag silently
     #    froze src/memebot/data for a day; nothing else noticed.
     try:
@@ -72,6 +105,43 @@ def main() -> int:
             check(f"{unit} running", BAD, str(e))
 
     log = journal("memebot-scalper")
+
+    # every feed the configuration asks for must actually connect. A feed
+    # that never starts is indistinguishable from a feed with nothing to
+    # report, which is how a disabled second feed went unnoticed for hours.
+    want = os.environ.get("MEMEBOT_FEED", "both")
+    expected = ({"portal", "narrow"} if want == "both"
+                else {"portal"} if want == "portal"
+                else {"websocket"} if want == "websocket" else {"poll"})
+    connected = set()
+    if "portal launch feed connected" in log:
+        connected.add("portal")
+    if "narrow rpc feed connected" in log:
+        connected.add("narrow")
+    if "realtime launch feed connected" in log:
+        connected.add("websocket")
+    if "polling launch feed started" in log:
+        connected.add("poll")
+    missing = expected - connected
+    check("all configured feeds connected", OK if not missing else BAD,
+          f"{sorted(connected) or 'none'} connected"
+          + (f" — MISSING {sorted(missing)}" if missing else ""))
+
+    # a schema the code expects but the database lacks silently disables
+    # whatever depends on it
+    try:
+        db0 = sqlite3.connect(DB)
+        cols = {r[1] for r in
+                db0.execute("PRAGMA table_info(candidate_journal)")}
+        need = {"feed", "drawdown", "drift", "vol2", "outcome",
+                "out_trail30", "out_tp2x", "out_time30"}
+        gone = need - cols
+        check("journal schema complete", OK if not gone else BAD,
+              "all columns present" if not gone
+              else f"MISSING {sorted(gone)} — restart to migrate")
+        db0.close()
+    except Exception as e:
+        check("journal schema complete", BAD, str(e))
 
     # 3. the feed is connected AND delivering, not merely constructed
     connected = "launch feed connected" in log

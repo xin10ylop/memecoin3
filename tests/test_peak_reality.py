@@ -81,3 +81,28 @@ def test_exec_column_still_rides_a_real_move():
            [240, 1.95, 2.0, 1.5, 1.60, 600],
            [300, 1.6, 1.65, 1.5, 1.55, 400]]
     assert under(_panel(fwd), "exec", 0.10, 30) > 0.5
+
+
+def test_backfill_window_starts_at_the_candidates_own_launch():
+    """A backfilled row must be scored against its OWN launch window.
+
+    Widening the backfill to pick up columns added later made every
+    historical row eligible again. Unanchored, the aggregator hands back the
+    most recent hour, so the entry price would come from days after the
+    launch being measured.
+    """
+    import importlib.util
+    import os
+    spec = importlib.util.spec_from_file_location(
+        "fill_outcomes", os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "scripts", "fill_outcomes.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    launch = 16667 * 60                # a real bar ts is divisible by 60
+    det = launch + 37                  # detection lands mid-minute
+    bars = [[launch - 1200 + 60 * i, 1, 1, 1, 1, 10] for i in range(20)]
+    bars += [[launch + 60 * i, 2, 2, 2, 2, 10] for i in range(40)]
+    win = m.window_from(bars, det)
+    assert len(win) == 40, "keeps the detection minute and everything after"
+    assert win[0][0] == launch, "starts at the bar detection happened in"
+    assert float(win[1][4]) == 2, "entry comes from the launch, not before"

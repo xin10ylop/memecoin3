@@ -104,6 +104,24 @@ def outcome_under(bars: list, kind: str, param: float,
     return DEAD_RECOVERY - 1 - COST
 
 
+def window_from(bars: list, det_ts: float) -> list:
+    """The bars belonging to THIS candidate's launch, not the latest hour.
+
+    outcome_from_bars takes its entry from bars[1], so if the list starts
+    somewhere other than the detection minute the entry price belongs to a
+    different day. Verified against the aggregator: an unanchored fetch for
+    a pool observed six days ago returns bars 136 hours after the launch it
+    is supposed to measure.
+
+    Detection lands at an arbitrary second, so the start is floored to the
+    minute: that keeps the bar detection happened IN and no earlier one. A
+    60-second tolerance instead admits the preceding bar, which shifts every
+    later index by one and takes the entry from the wrong minute.
+    """
+    start = int(det_ts // 60) * 60
+    return [b for b in bars if b[0] >= start]
+
+
 def outcome_from_bars(bars: list) -> float | None:
     """Entry at the close of minute 2; 30% trail; 30-minute cap."""
     if len(bars) < 4:
@@ -140,20 +158,33 @@ def main() -> int:
         # exit comparison reported zero candidates and looked like a lack
         # of data rather than a backfill that never ran.
         todo = list(db.execute(
-            "SELECT mint FROM candidate_journal "
-            "WHERE (outcome IS NULL OR out_trail30 IS NULL OR out_exec10 IS NULL) "
+            "SELECT mint, ts FROM candidate_journal "
+            "WHERE (outcome IS NULL OR out_trail30 IS NULL "
+            "OR out_exec10 IS NULL) "
             "AND ts < ? ORDER BY ts DESC LIMIT 40", (cutoff,)))
         db.close()
         if not todo:
             time.sleep(300)
             continue
         done = 0
-        for (mint,) in todo:
+        for mint, det_ts in todo:
             try:
                 pools = gt.token_pools(mint)
                 if not pools:
                     continue
-                bars = sanitize_bars(gt.ohlcv(pools[0].address, limit=60))
+                # Anchor the fetch to WHEN THIS CANDIDATE WAS SEEN. Without
+                # before_timestamp the aggregator returns the most recent
+                # hour, which is right only while the row is fresh. Widening
+                # the selection to backfill columns added later made every
+                # historical row eligible, and each would have been scored
+                # against today's prices -- entry taken from a bar hours
+                # after the launch it is supposed to measure. Silent, and it
+                # would have poisoned the exact dataset the go/no-go
+                # decision rests on.
+                bars = sanitize_bars(gt.ohlcv(
+                    pools[0].address, limit=60,
+                    before_timestamp=int(det_ts) + (HORIZON + 10) * 60))
+                bars = window_from(bars, det_ts)
                 ret = outcome_from_bars(bars)
                 if ret is None:
                     continue

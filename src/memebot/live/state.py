@@ -79,7 +79,14 @@ class StateStore:
         for col, decl in (("vol2", "REAL"), ("buyers_m1", "INTEGER"),
                           ("buyers_m2", "INTEGER"), ("outcome", "REAL"),
                           ("outcome_ts", "REAL"), ("drawdown", "REAL"),
-                          ("drift", "REAL"), ("feed", "TEXT")):
+                          ("drift", "REAL"), ("feed", "TEXT"),
+                          # one column per exit rule, so "which exit works"
+                          # is a query over the SAME coins rather than an
+                          # argument between backtests
+                          ("out_trail30", "REAL"), ("out_trail15", "REAL"),
+                          ("out_trail10", "REAL"), ("out_tp1_5x", "REAL"),
+                          ("out_tp2x", "REAL"), ("out_time10", "REAL"),
+                          ("out_time30", "REAL")):
             if col not in jcols:
                 self.db.execute(
                     f"ALTER TABLE candidate_journal ADD COLUMN {col} {decl}")

@@ -32,6 +32,52 @@ except Exception:
     MIN_RANGE, MIN_ACCEL, TRAIL = 0.172, 1.0, 0.10
 
 
+def _by_epoch(d, rows) -> None:
+    """Split the ledger where the trading rule changed.
+
+    A rule is judged by the trades IT took. Restoring a configuration and
+    then reading a P&L still dominated by the previous one's losses is how a
+    correct change gets reverted for looking broken -- and this ledger spans
+    three different rules today alone.
+    """
+    try:
+        eps = list(d.execute("SELECT ts, cfg FROM config_epochs ORDER BY ts"))
+    except sqlite3.Error:
+        return
+    if not eps:
+        return
+    # trades before the first stamped epoch ran under rules nobody recorded
+    bounds = [(None, eps[0][0], "before the rule was stamped")]
+    for i, (ts, cfg) in enumerate(eps):
+        end = eps[i + 1][0] if i + 1 < len(eps) else None
+        bounds.append((ts, end, cfg))
+    shown = 0
+    lines = []
+    for start, end, label in bounds:
+        grp = [t for t in rows
+               if (start is None or t[4] >= start)
+               and (end is None or t[4] < end)]
+        if not grp:
+            continue
+        shown += 1
+        rr = np.array([x / e - 1 for e, x, _, _, _ in grp if e > 0])
+        pnl = sum(t[2] for t in grp)
+        mean = f"{rr.mean():+.1%}" if len(rr) else "n/a"
+        lines.append(f"  {len(grp):>3} trades  ${pnl:>+8.2f}  mean {mean:>8}"
+                     f"   {label}")
+    if shown < 2:
+        return                       # one rule, nothing to separate
+    print()
+    print("by rule in force (a rule is judged by the trades IT took)")
+    for line in lines:
+        print(line)
+    newest = lines[-1]
+    n_new = int(newest.strip().split()[0])
+    if n_new < 25:
+        print(f"  the current rule has {n_new} trades — too few to read; "
+              f"this profile needs ~100")
+
+
 def main() -> int:
     d = sqlite3.connect(DB)
     print("=" * 62)
@@ -66,6 +112,7 @@ def main() -> int:
         # the tail is the whole thesis: without big winners this loses
         best = np.sort(r)[-3:][::-1]
         print("best 3    " + ", ".join(f"{x:+.0%}" for x in best))
+        _by_epoch(d, rows)
 
     print()
     print("=" * 62)

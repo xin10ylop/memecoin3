@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import time
 
 from ..risk import OpenPosition
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS positions (
@@ -29,6 +32,15 @@ CREATE TABLE IF NOT EXISTS equity (
     equity_usd REAL, cash_usd REAL, n_positions INTEGER
 );
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+
+-- When the trading rule changed, so a ledger spanning several rules can be
+-- read as several ledgers. Judging a restored configuration by a P&L still
+-- dominated by trades the previous one took is how a correct change gets
+-- reverted for looking broken.
+CREATE TABLE IF NOT EXISTS config_epochs (
+    ts REAL PRIMARY KEY,
+    cfg TEXT
+);
 
 CREATE TABLE IF NOT EXISTS candidate_journal (
     mint TEXT PRIMARY KEY,
@@ -147,6 +159,25 @@ class StateStore:
     def delete_position(self, pool: str) -> None:
         self.db.execute("DELETE FROM positions WHERE pool=?", (pool,))
         self.db.commit()
+
+    def record_config(self, cfg: str) -> None:
+        """Note the rule in force, if it differs from the last one noted.
+
+        Called on every start, but a restart is not a rule change -- only a
+        different threshold string opens a new epoch.
+        """
+        try:
+            row = self.db.execute(
+                "SELECT cfg FROM config_epochs ORDER BY ts DESC "
+                "LIMIT 1").fetchone()
+            if row and row[0] == cfg:
+                return
+            self.db.execute("INSERT OR REPLACE INTO config_epochs (ts, cfg) "
+                            "VALUES (?, ?)", (time.time(), cfg))
+            self.db.commit()
+            log.info("config epoch recorded: %s", cfg)
+        except sqlite3.Error as e:
+            log.error("could not record config epoch: %s", e)
 
     # -- trades / equity -----------------------------------------------------
     def record_trade(self, p: OpenPosition, exit_price: float, pnl_usd: float,

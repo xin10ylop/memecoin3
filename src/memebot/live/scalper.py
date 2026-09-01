@@ -788,7 +788,18 @@ class RealtimeScalper:
 
     # ------------------------------------------------------------------ loop
 
+    def rule_string(self) -> str:
+        """The trading rule in force, as one comparable line."""
+        return (f"range>={MIN_RANGE} accel={MIN_ACCEL}-{MAX_ACCEL} "
+                f"drawdown<={MAX_DRAWDOWN} trail={TRAIL} "
+                f"vol2>={MIN_SOL_VOL2} hold<={MAX_HOLD_MIN}m")
+
     def run(self) -> None:
+        # Stamp the rule before trading under it. A ledger spanning several
+        # rules read as one ledger is how a correct change gets judged by
+        # the previous rule's losses.
+        self.state.record_config(self.rule_string())
+        log.info("rule in force: %s", self.rule_string())
         self.feed.start()
         self.notify.send(f"realtime scalper started "
                          f"({'LIVE' if self.is_live else 'paper'})")

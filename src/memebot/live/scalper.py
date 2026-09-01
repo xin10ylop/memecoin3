@@ -54,7 +54,7 @@ log = logging.getLogger(__name__)
 
 OBS_SEC = 120          # observation window before deciding
 POLL_SEC = 10          # price sampling cadence (batched across candidates)
-MIN_RANGE = 0.172      # validated threshold: >=17.2% range in the window
+MIN_RANGE = float(os.environ.get("MEMEBOT_MIN_RANGE", "0.172"))
 # Range alone is NOT tradable. Tested on every harvested pool with nothing
 # excluded for dying young, range>=17.2% returns -11.3% per trade
 # CI[-25.2%,+4.2%]: the rule buys the graveyard, and the graveyard was
@@ -66,7 +66,7 @@ MIN_RANGE = 0.172      # validated threshold: >=17.2% range in the window
 # minutes later. Requiring acceleration turns the same rule into +37.0%
 # per trade CI[+6.9%,+70.1%] (n=130), holds up out-of-sample (+19.3% on the
 # later half) and beats a same-size random subset of that period at p=0.012.
-MIN_ACCEL = 1.0        # minute-2 activity must at least match minute-1
+MIN_ACCEL = float(os.environ.get("MEMEBOT_MIN_ACCEL", "1.0"))
 # ...but not by too much. Return is NOT monotonic in acceleration -- rank
 # correlation is -0.17 and the >5x bucket earns +5.2% against +75.8% for
 # 1.5-2.5x. A second minute trading ten times the first is a frenzy at its
@@ -76,7 +76,7 @@ MIN_ACCEL = 1.0        # minute-2 activity must at least match minute-1
 # a spike at one lucky cut point -- but each OOS floor still spans zero at
 # n<=60. The loosest cut is used deliberately: it excludes only the extreme
 # and adds the fewest degrees of freedom to overfit.
-MAX_ACCEL = 10.0       # above this the launch is a frenzy, not a trend
+MAX_ACCEL = float(os.environ.get("MEMEBOT_MAX_ACCEL", "10.0"))
 # A separate question from alpha: can the pool be TRADED at all? A live
 # entry fired on a pool whose first two minutes carried one dollar of
 # volume -- its "range" was a stale resting price moving on nothing, and
@@ -100,7 +100,26 @@ MIN_SOL_VOL2 = 0.5     # total SOL swapped in the first two minutes
 # buying near the high selects coins that TREND rather than spike, and a
 # trend is still there when the bot polls ten seconds later. The old rule's
 # profits lived in intra-minute spikes it could never actually catch.
-MAX_DRAWDOWN = 0.10    # enter within 10% of the high we observed
+# Set from the environment so a threshold can be changed without a
+# redeploy -- three deploys were burned today adjusting constants.
+#
+# Default LOOSENED to 1.0 (off) for the migration feed, deliberately and
+# on evidence. On 232 journalled candidates from this feed, drawdown
+# carried no signal at all:
+#   0-5%   n=44  2x 4.5%  mean +6.3%
+#   5-10%  n=10  2x 0.0%  mean +2.5%
+#   10-20% n=27  2x 0.0%  mean -1.6%
+#   20-40% n=35  2x 2.9%  mean +1.4%
+#   >40%   n=116 2x 6.9%  mean +10.8%   <- the bucket we rejected hardest
+# It was passing 3 of 42 candidates an hour, which projects to ZERO trades
+# overnight: a night that cannot produce ten trades teaches nothing.
+#
+# This is NOT a claim that the filter is wrong -- it was significant on the
+# historical sample (OR 3.44, p=0.025). It is a claim that it is unproven
+# HERE and is currently the only thing preventing us from finding out.
+# Drawdown is still recorded on every candidate, so the shadow test can
+# judge it against real outcomes rather than against my expectations.
+MAX_DRAWDOWN = float(os.environ.get("MEMEBOT_MAX_DRAWDOWN", "1.0"))
 MIN_SAMPLES = 3        # matches the backtest's "traded in >=2 minutes";
                        # Jupiter's batch price call intermittently omits
                        # brand-new mints, so demanding 6 samples was

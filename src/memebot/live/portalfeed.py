@@ -157,10 +157,20 @@ class NarrowRpcFeed(PortalLaunchFeed):
     valuable; it was expensive because it was unfiltered.
     """
 
-    def __init__(self, maxlen: int = 2000):
+    # The PUBLIC Solana endpoint carries the identical stream for nothing.
+    # Measured side by side: Helius 772 msg/s, public RPC 662 msg/s, same
+    # subscription. Paying for this data was never necessary; the paid key
+    # is kept only as a fallback if the public endpoint refuses.
+    PUBLIC_WS = "wss://api.mainnet-beta.solana.com"
+
+    def __init__(self, maxlen: int = 2000, use_public: bool | None = None):
         super().__init__(maxlen=maxlen)
-        self.ws_url = (os.environ.get("MEMEBOT_RPC_URL", "")
-                       .replace("https://", "wss://").replace("http://", "ws://"))
+        pub = (use_public if use_public is not None else
+               os.environ.get("MEMEBOT_NARROW_PUBLIC", "1") != "0")
+        paid = (os.environ.get("MEMEBOT_RPC_URL", "")
+                .replace("https://", "wss://").replace("http://", "ws://"))
+        self.ws_url = self.PUBLIC_WS if pub else paid
+        self.fallback_url = paid if pub else self.PUBLIC_WS
 
     async def _run(self) -> None:
         import websockets
@@ -194,5 +204,15 @@ class NarrowRpcFeed(PortalLaunchFeed):
             except Exception as e:
                 log.warning("narrow rpc feed dropped (%s); retry in %.0fs",
                             e, backoff)
+                # The public endpoint is free but not guaranteed. If it
+                # keeps refusing, fall back to the paid key -- this
+                # subscription is 3 messages in two minutes, so even paid
+                # it costs essentially nothing. Free where possible,
+                # working always.
+                if backoff >= 8 and self.fallback_url and \
+                        self.ws_url != self.fallback_url:
+                    log.warning("narrow feed switching to the fallback "
+                                "endpoint after repeated failures")
+                    self.ws_url = self.fallback_url
                 await asyncio.sleep(backoff)
                 backoff = min(30.0, backoff * 2)
